@@ -179,8 +179,9 @@ def resume(
     )
 
     async def _run() -> None:
-        manifest = JobManifest.from_path(manifest_path)
-        running = runner.start(job_id=job_id, manifest=manifest)
+        # Touch the manifest just to fail fast on a corrupt one before launch.
+        JobManifest.from_path(manifest_path)
+        running = runner.start(job_id=job_id)
         try:
             await running.task
         except BookToAnimeError as exc:

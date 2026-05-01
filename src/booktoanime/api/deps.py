@@ -18,7 +18,6 @@ from typing import Any
 
 from ..parsing import PDFParser
 from ..pipeline.events import ProgressEventBus
-from ..pipeline.manifest import JobManifest
 from ..pipeline.orchestrator import PipelineDependencies, PipelineOrchestrator
 from ..pipeline.video_assembler import FFmpegRunner
 from ..providers import (
@@ -105,11 +104,22 @@ class JobRunner:
 
     # ----------------------------------------------------------------- run
 
-    def start(self, *, job_id: str, manifest: JobManifest) -> _RunningJob:
+    def start(self, *, job_id: str) -> _RunningJob:
+        """Launch (or rejoin) the orchestrator task for ``job_id``.
+
+        The orchestrator reads ``manifest.json`` from disk itself, so the
+        caller doesn't need to hand a manifest in — it only needs to ensure
+        the on-disk state for ``job_id`` is valid before calling.
+        """
+
         if job_id in self._live and not self._live[job_id].task.done():
             return self._live[job_id]
 
         job_dir = self.data_dir / "jobs" / job_id
+        if not (job_dir / "manifest.json").is_file():
+            raise FileNotFoundError(
+                f"cannot start job {job_id}: manifest.json missing at {job_dir}"
+            )
         bus = ProgressEventBus(job_dir / "events.log")
 
         # Build providers up-front so any config error surfaces before the

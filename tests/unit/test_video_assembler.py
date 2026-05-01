@@ -214,6 +214,103 @@ async def test_assemble_runner_failure_propagates(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_filtergraph_n1_uses_anull(tmp_path: Path) -> None:
+    """n=1 must NOT emit `concat=n=1` — that filter requires >=2 inputs."""
+
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    images_index, audio_index = _make_dirs(job_dir, 1)
+    storyboard = Storyboard(
+        shots=[_shot(1, duration=4.0)],
+        total_duration_seconds_target=4.0,
+    )
+
+    captured: list[str] = []
+
+    async def runner(argv, log_path):
+        captured.extend(argv)
+        out_path = Path(argv[-1])
+        out_path.write_bytes(b"\x00\x00\x00 ftypisom" + b"X" * 64)
+
+    bus = ProgressEventBus(job_dir / "events.log")
+    assembler = VideoAssembler(
+        VideoAssemblerConfig(width=128, height=128, fps=24, crf=23, preset="ultrafast"),
+        bus=bus,
+        runner=runner,
+        ffmpeg_binary="ffmpeg-stub",
+    )
+    await assembler.assemble(
+        storyboard=storyboard,
+        audio_index=audio_index,
+        images_index=images_index,
+        job_dir=job_dir,
+    )
+    await bus.close()
+
+    fc_index = captured.index("-filter_complex") + 1
+    filter_complex = captured[fc_index]
+    assert "[v0]copy[vout]" in filter_complex
+    assert "anull[aout]" in filter_complex
+    assert "concat=n=1" not in filter_complex
+
+
+@pytest.mark.asyncio
+async def test_filtergraph_xfade_offsets_use_rendered_duration(tmp_path: Path) -> None:
+    """For 3 shots with non-uniform fades, the xfade offset for shot 3 must
+    equal `rendered_after_xfade_2 - fade_2_3`, not raw cumulative input time.
+    """
+
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    images_index, audio_index = _make_dirs(job_dir, 3)
+    # Override audio durations to known values.
+    audio_index = AudioIndex(
+        items=[
+            ShotAudioRecord(shot_id="shot_0001", file="audio/shot_0001.wav", duration_seconds=10.0, sample_rate=24000),
+            ShotAudioRecord(shot_id="shot_0002", file="audio/shot_0002.wav", duration_seconds=8.0, sample_rate=24000),
+            ShotAudioRecord(shot_id="shot_0003", file="audio/shot_0003.wav", duration_seconds=6.0, sample_rate=24000),
+        ]
+    )
+    storyboard = Storyboard(
+        shots=[
+            _shot(1, duration=10.0),
+            _shot(2, duration=8.0),
+            _shot(3, duration=6.0),
+        ],
+        total_duration_seconds_target=24.0,
+    )
+
+    captured: list[str] = []
+
+    async def runner(argv, log_path):
+        captured.extend(argv)
+        Path(argv[-1]).write_bytes(b"X" * 100)
+
+    bus = ProgressEventBus(job_dir / "events.log")
+    assembler = VideoAssembler(
+        VideoAssemblerConfig(width=128, height=128, fps=24),
+        bus=bus,
+        runner=runner,
+        ffmpeg_binary="ffmpeg-stub",
+    )
+    await assembler.assemble(
+        storyboard=storyboard,
+        audio_index=audio_index,
+        images_index=images_index,
+        job_dir=job_dir,
+    )
+    await bus.close()
+
+    fc_index = captured.index("-filter_complex") + 1
+    filter_complex = captured[fc_index]
+    # xfade_1 between v0 + v1: offset = dur(0) - fade = 10 - 0.4 = 9.6
+    assert "offset=9.600" in filter_complex
+    # xfade_2 between vx1 + v2: rendered_so_far = 9.6 + 8.0 = 17.6,
+    #   then offset = 17.6 - fade(1,2) = 17.6 - 0.4 = 17.2
+    assert "offset=17.200" in filter_complex
+
+
+@pytest.mark.asyncio
 async def test_assemble_fails_when_runner_succeeds_but_no_output(tmp_path: Path) -> None:
     job_dir = tmp_path / "job"
     job_dir.mkdir()

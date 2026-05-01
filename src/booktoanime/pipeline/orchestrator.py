@@ -243,6 +243,7 @@ class PipelineOrchestrator:
                 concurrency=_concurrency_for_profile(manifest.config.profile),
                 width=_width_for_aspect(manifest.config.aspect_ratio),
                 height=_height_for_aspect(manifest.config.aspect_ratio),
+                anime_style=manifest.config.anime_style,
             ),
             bus=self._deps.bus,
         )

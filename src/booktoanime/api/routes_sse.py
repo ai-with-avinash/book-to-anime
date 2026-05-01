@@ -8,6 +8,7 @@ event and close the stream so the browser stops waiting.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 
@@ -33,9 +34,26 @@ def build_sse_router() -> APIRouter:
         async def event_stream() -> AsyncIterator[dict[str, str]]:
             async with bus.subscribe() as queue:
                 while True:
-                    if await request.is_disconnected():
+                    # Race the queue against client disconnect so an idle
+                    # subscriber doesn't hold a slot forever after the
+                    # browser tab closes.
+                    queue_task = asyncio.create_task(queue.get())
+                    disconnect_task = asyncio.create_task(request.is_disconnected())
+                    done, pending = await asyncio.wait(
+                        {queue_task, disconnect_task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for task in pending:
+                        task.cancel()
+
+                    if disconnect_task in done and disconnect_task.result():
                         break
-                    event = await queue.get()
+                    if queue_task not in done:
+                        # Disconnect fired without a queue item; loop top
+                        # will re-check and break above.
+                        continue
+
+                    event = queue_task.result()
                     if event is None:
                         # Sentinel: bus closed, signal end-of-stream.
                         yield {

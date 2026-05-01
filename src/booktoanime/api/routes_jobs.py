@@ -134,7 +134,7 @@ def build_job_router() -> APIRouter:
             data_dir=data_dir,
             config=config.model_dump(mode="json"),
         )
-        runner.start(job_id=job_id, manifest=manifest)
+        runner.start(job_id=job_id)
 
         return JobCreatedResponse(
             job_id=job_id,
@@ -161,8 +161,12 @@ def build_job_router() -> APIRouter:
                     detail="job already completed",
                 )
 
-        manifest = _load_manifest(request, job_id)
-        request.app.state.runner.start(job_id=job_id, manifest=manifest)
+        if _load_manifest(request, job_id) is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="manifest.json missing or corrupt; cannot resume",
+            )
+        request.app.state.runner.start(job_id=job_id)
         return JobCreatedResponse(
             job_id=job_id,
             status="running",
@@ -216,7 +220,9 @@ _ALPHABET = string.ascii_uppercase + string.digits
 
 
 def _generate_job_id() -> str:
-    """ULID-like 26-char id without the ulid-py dep cost (we only need uniqueness)."""
+    """26-char alphanumeric job id. Sufficiently unique for one user's jobs;
+    we don't need ULID's monotonic-time guarantee.
+    """
 
     return "".join(secrets.choice(_ALPHABET) for _ in range(26))
 

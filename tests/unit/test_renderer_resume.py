@@ -157,6 +157,56 @@ async def test_orphan_file_without_index_is_adopted(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_persona_uses_explicit_anime_style_not_descriptor(tmp_path: Path) -> None:
+    """The renderer must pass the configured anime_style verbatim to
+    `provider.prepare`, not a token sliced out of `style_descriptor`.
+    """
+
+    job_dir = tmp_path / "job"
+    captured: list[str] = []
+
+    class _Visual(VisualProvider):
+        name = "rec"
+
+        async def prepare(self, *, anime_style: str, narrator_seed: int) -> Path:
+            captured.append(anime_style)
+            (tmp_path / "personas").mkdir(parents=True, exist_ok=True)
+            path = tmp_path / "personas" / f"{anime_style}__{narrator_seed}.png"
+            Image.new("RGB", (16, 16), (1, 2, 3)).save(path)
+            return path
+
+        async def render(self, request, out_path):
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (request.width, request.height), (10, 20, 30)).save(out_path)
+            return GeneratedImage(path=out_path, seed=request.seed, width=request.width, height=request.height)
+
+        async def close(self):
+            return None
+
+    persona = NarratorPersona(
+        seed=42,
+        # Real-world descriptor produced by derive_persona — has a comma in it.
+        style_descriptor="shoujo-soft narrator persona, voice af_bella in en-US",
+    )
+    bus = ProgressEventBus(job_dir / "events.log")
+    renderer = ShotImageRenderer(
+        _Visual(),
+        ImageRendererConfig(
+            width=64, height=64, steps=2, guidance=4.0, concurrency=1,
+            anime_style="shoujo-soft",  # canonical config value
+        ),
+        bus=bus,
+    )
+    storyboard = _storyboard(1)
+    await renderer.render(storyboard=storyboard, persona=persona, job_dir=job_dir)
+    await bus.close()
+
+    # Provider received the canonical "shoujo-soft", not the parsed
+    # "shoujo-soft narrator persona".
+    assert captured == ["shoujo-soft"]
+
+
+@pytest.mark.asyncio
 async def test_partial_failure_persists_completed_records(tmp_path: Path) -> None:
     job_dir = tmp_path / "job"
     persona = NarratorPersona(seed=42, style_descriptor="shounen-bright")

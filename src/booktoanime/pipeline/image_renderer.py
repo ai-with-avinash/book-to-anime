@@ -37,6 +37,11 @@ class ImageRendererConfig:
     steps: int = 28
     guidance: float = 5.5
     concurrency: int = 2
+    # Style key passed verbatim to ``VisualProvider.prepare`` so the persona
+    # cache key matches what the visual provider's _STYLE_FRAGMENTS lookup
+    # expects. Falling back to parsing the persona descriptor produced
+    # cache keys like "shounen-bright_narrator_persona__<seed>.png".
+    anime_style: str = "shounen-bright"
 
 
 class ShotImageRenderer:
@@ -155,9 +160,8 @@ class ShotImageRenderer:
             if absolute.is_file():
                 return absolute
 
-        anime_style = persona.style_descriptor.split(",")[0].strip() or "shounen-bright"
         return await self._provider.prepare(
-            anime_style=anime_style, narrator_seed=persona.seed
+            anime_style=self._config.anime_style, narrator_seed=persona.seed
         )
 
     async def _render_one(

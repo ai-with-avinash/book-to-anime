@@ -19,7 +19,6 @@ This product depends on the following third-party software:
   * PyYAML (MIT)                   https://pyyaml.org/
   * soundfile (BSD-3-Clause)       https://github.com/bastibe/python-soundfile
   * NumPy (BSD-3-Clause)           https://numpy.org/
-  * ulid-py (MIT)                  https://github.com/ahawker/ulid
   * FastAPI (MIT)                  https://fastapi.tiangolo.com/
   * Starlette (BSD-3-Clause)       https://www.starlette.io/
   * uvicorn (BSD-3-Clause)         https://www.uvicorn.org/

@@ -240,35 +240,37 @@ class VideoAssembler:
 
         # Crossfade chain on video.
         n = len(storyboard.shots)
-        offsets = [0.0]
-        for shot in storyboard.shots[:-1]:
-            cf_in = max(0, shot.crossfade_in_ms) / 1000.0
-            offsets.append(offsets[-1] + max(0.0, durations[shot.id] - cf_in))
 
         if n == 1:
+            # Single-shot run: no chain, no concat — wire v0 + a0 directly.
             video_filters.append("[v0]copy[vout]")
-        else:
-            current_label = "v0"
-            cumulative = durations[storyboard.shots[0].id]
-            for idx in range(1, n):
-                fade_ms = max(
-                    storyboard.shots[idx - 1].crossfade_in_ms,
-                    storyboard.shots[idx].crossfade_out_ms,
-                    0,
-                )
-                fade_seconds = min(
-                    fade_ms / 1000.0,
-                    max(0.05, durations[storyboard.shots[idx - 1].id] - 0.05),
-                    max(0.05, durations[storyboard.shots[idx].id] - 0.05),
-                )
-                offset = max(0.0, cumulative - fade_seconds)
-                cumulative += durations[storyboard.shots[idx].id] - fade_seconds
-                out_label = "vout" if idx == n - 1 else f"vx{idx}"
-                video_filters.append(
-                    f"[{current_label}][v{idx}]xfade=transition=fade:"
-                    f"duration={fade_seconds:.3f}:offset={offset:.3f}[{out_label}]"
-                )
-                current_label = out_label
+            video_filters.append(f"[{n}:a]anull[aout]")
+            return ";".join(video_filters)
+
+        # xfade offset must be the running length of the *already-faded*
+        # output stream, not the raw cumulative input duration. Track it
+        # separately so non-uniform fades stay aligned.
+        current_label = "v0"
+        rendered_so_far = durations[storyboard.shots[0].id]
+        for idx in range(1, n):
+            fade_ms = max(
+                storyboard.shots[idx - 1].crossfade_in_ms,
+                storyboard.shots[idx].crossfade_out_ms,
+                0,
+            )
+            fade_seconds = min(
+                fade_ms / 1000.0,
+                max(0.05, durations[storyboard.shots[idx - 1].id] - 0.05),
+                max(0.05, durations[storyboard.shots[idx].id] - 0.05),
+            )
+            offset = max(0.0, rendered_so_far - fade_seconds)
+            rendered_so_far = offset + durations[storyboard.shots[idx].id]
+            out_label = "vout" if idx == n - 1 else f"vx{idx}"
+            video_filters.append(
+                f"[{current_label}][v{idx}]xfade=transition=fade:"
+                f"duration={fade_seconds:.3f}:offset={offset:.3f}[{out_label}]"
+            )
+            current_label = out_label
 
         # Audio: concat (the audio has already been timed to each shot — TTS
         # output length is what drives shot duration). Use ``concat`` filter
