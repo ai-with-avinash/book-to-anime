@@ -1,0 +1,108 @@
+{% extends "_layout.html" %}
+
+{% block title %}BookToAnime — New job{% endblock %}
+
+{% block content %}
+<section class="card">
+  <h2>Upload a PDF</h2>
+  <form
+    class="upload-form"
+    action="/api/jobs"
+    method="post"
+    enctype="multipart/form-data"
+    x-data="{ submitting: false }"
+    @submit="submitting = true"
+  >
+    <label>
+      PDF file
+      <input type="file" name="pdf" accept="application/pdf" required />
+    </label>
+
+    <div class="grid">
+      <label>
+        Anime style
+        <select name="anime_style">
+          <option value="shounen-bright">Shounen-bright</option>
+          <option value="shoujo-soft">Shoujo-soft</option>
+          <option value="seinen-muted">Seinen-muted</option>
+          <option value="chibi">Chibi</option>
+        </select>
+      </label>
+
+      <label>
+        Voice id
+        <input type="text" name="voice_id" value="af_bella" required />
+      </label>
+
+      <label>
+        Language
+        <input type="text" name="language" value="en-US" />
+      </label>
+
+      <label>
+        Speed
+        <input type="number" step="0.1" min="0.5" max="2.0" name="speed" value="1.0" />
+      </label>
+
+      <label>
+        Depth
+        <select name="depth">
+          <option value="eli5">ELI5</option>
+          <option value="undergraduate" selected>Undergraduate</option>
+          <option value="expert">Expert</option>
+        </select>
+      </label>
+
+      <label>
+        Length
+        <select name="length_preset">
+          <option value="short">Short (5-10 min)</option>
+          <option value="standard" selected>Standard (15-25 min)</option>
+          <option value="in_depth">In-depth (40-60 min)</option>
+        </select>
+      </label>
+
+      <label>
+        Aspect ratio
+        <select name="aspect_ratio">
+          <option value="16:9" selected>16:9</option>
+          <option value="9:16">9:16</option>
+          <option value="1:1">1:1</option>
+        </select>
+      </label>
+
+      <label>
+        Profile
+        <select name="profile">
+          <option value="default" selected>Default</option>
+          <option value="high_quality">High quality</option>
+          <option value="low_vram">Low VRAM</option>
+        </select>
+      </label>
+    </div>
+
+    <button type="submit" :disabled="submitting">
+      <span x-show="!submitting">Generate</span>
+      <span x-show="submitting">Uploading…</span>
+    </button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Recent jobs</h2>
+  {% if jobs %}
+    <ul class="job-list">
+      {% for job in jobs %}
+        <li>
+          <a href="/jobs/{{ job.job_id }}">{{ job.job_id }}</a>
+          <span class="status status-{{ job.status }}">{{ job.status }}</span>
+          {% if job.current_stage %}<span class="stage">{{ job.current_stage }}</span>{% endif %}
+          {% if job.error_message %}<small class="err">{{ job.error_message }}</small>{% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted">No jobs yet — upload a PDF above to get started.</p>
+  {% endif %}
+</section>
+{% endblock %}

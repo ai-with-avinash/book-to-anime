@@ -1,0 +1,96 @@
+"""Request / response models for the JSON API."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from ..pipeline.manifest import (
+    AspectRatio,
+    Depth,
+    JobConfig,
+    LengthPreset,
+    NarrationConfig,
+    Profile,
+    ProvidersConfig,
+    StageStatus,
+)
+
+
+class CreateJobRequest(BaseModel):
+    """Form fields posted by the upload UI (multipart, sans the PDF file)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    anime_style: str = "shounen-bright"
+    voice_id: str
+    language: str = "en-US"
+    speed: float = 1.0
+    depth: Depth = "undergraduate"
+    length_preset: LengthPreset = "standard"
+    minutes_per_topic: float | None = Field(default=None, gt=0.0)
+    aspect_ratio: AspectRatio = "16:9"
+    profile: Profile = "default"
+
+    def to_job_config(self, providers: ProvidersConfig) -> JobConfig:
+        return JobConfig(
+            anime_style=self.anime_style,
+            narration=NarrationConfig(
+                voice_id=self.voice_id,
+                language=self.language,
+                speed=self.speed,
+            ),
+            depth=self.depth,
+            length_preset=self.length_preset,
+            minutes_per_topic=self.minutes_per_topic,
+            aspect_ratio=self.aspect_ratio,
+            profile=self.profile,
+            providers=providers,
+        )
+
+
+class JobSummary(BaseModel):
+    """Compact view returned by ``GET /jobs`` and ``GET /jobs/{id}``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str
+    status: str
+    current_stage: str | None
+    created_at: datetime
+    updated_at: datetime
+    source_pdf: str
+    error_message: str | None = None
+    stages: dict[str, StageStatus] = Field(default_factory=dict)
+
+
+class JobCreatedResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str
+    status: str
+    events_url: str
+    job_url: str
+
+
+class JobListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    jobs: list[JobSummary]
+
+
+class HealthResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str = "ok"
+    version: str
+    providers: dict[str, str]
+
+
+class ErrorResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    detail: str
+    extra: dict[str, Any] = Field(default_factory=dict)

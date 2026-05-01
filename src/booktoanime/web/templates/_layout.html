@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}BookToAnime{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css" />
+  <script src="https://unpkg.com/htmx.org@2.0.3" defer></script>
+  <script src="https://unpkg.com/alpinejs@3.14.1" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a href="/" class="brand">BookToAnime</a>
+    <span class="tagline">PDF to anime explainer video</span>
+  </header>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>
