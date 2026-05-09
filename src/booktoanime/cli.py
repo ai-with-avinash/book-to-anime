@@ -22,6 +22,7 @@ from platformdirs import user_data_dir
 from rich.console import Console
 
 from . import __version__
+from ._dotenv import load_dotenv
 from .api import AppSettings, ProviderFactory, create_app
 from .errors import BookToAnimeError
 from .pipeline.manifest import JobManifest, ProvidersConfig
@@ -121,7 +122,18 @@ def _root(
             help="Path to config.yaml (default: ./config.yaml).",
         ),
     ] = None,
+    env_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--env-file",
+            help="Path to a .env file (default: ./.env). Loaded before config.yaml so api_key_env entries can resolve.",
+        ),
+    ] = None,
 ) -> None:
+    # Load .env first — config.yaml's `api_key_env: NAME` entries are read
+    # at provider-build time and rely on os.environ being populated.
+    dotenv_path = (env_file or Path.cwd() / ".env").expanduser()
+    load_dotenv(dotenv_path)
     ctx.ensure_object(dict)
     ctx.obj["data_dir"] = _resolve_data_dir(data_dir)
     ctx.obj["config_path"] = config

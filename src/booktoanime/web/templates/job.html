@@ -94,7 +94,7 @@ function jobView() {
     status: {{ job.status | tojson }},
     currentStage: {{ job.current_stage | tojson }},
     stages: {{ job.stages | tojson }},
-    chapters: {{ (job.chapters | default([])) | tojson }},
+    chapters: {{ (chapters_json | default([])) | tojson }},
     progress: 0,
     errorMessage: {{ (job.error_message or '') | tojson }},
     _source: null,

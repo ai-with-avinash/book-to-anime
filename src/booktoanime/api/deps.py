@@ -28,6 +28,7 @@ from ..providers import (
     build_language_provider,
     build_visual_provider,
 )
+from ..providers.base import LipSyncProvider
 from ..state import JobRepository, JobStatus
 
 _logger = logging.getLogger(__name__)
@@ -45,6 +46,11 @@ class ProviderFactory:
     audio_factory: Callable[[], AudioProvider]
     visual_factory: Callable[[], VisualProvider]
     vision_fallback_factory: Callable[[], LanguageProvider | None] = lambda: None
+    # Optional lip-sync provider builder. Returns None when lip-sync isn't
+    # wired; the orchestrator skips MOUTH_ANIMATION when the JobConfig
+    # disables it, and raises a clear error if it's enabled but no provider
+    # was supplied.
+    lipsync_factory: Callable[[], LipSyncProvider | None] = lambda: None
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> ProviderFactory:
@@ -129,6 +135,7 @@ class JobRunner:
             audio = self.provider_factory.audio_factory()
             visual = self.provider_factory.visual_factory()
             vision_fallback = self.provider_factory.vision_fallback_factory()
+            lipsync = self.provider_factory.lipsync_factory()
         except Exception as exc:
             _logger.exception("provider build failed for job %s", job_id)
             self.repo.update_status(
@@ -146,6 +153,7 @@ class JobRunner:
             vision_fallback=vision_fallback,
             ffmpeg_runner=self.ffmpeg_runner,
             ffmpeg_binary=self.ffmpeg_binary,
+            lipsync=lipsync,
         )
         orchestrator = PipelineOrchestrator(deps)
 
@@ -164,6 +172,9 @@ class JobRunner:
                 if vision_fallback is not None:
                     with suppress(Exception):
                         await vision_fallback.close()
+                if lipsync is not None:
+                    with suppress(Exception):
+                        await lipsync.close()
                 await bus.close()
 
         task = asyncio.create_task(_runner(), name=f"booktoanime-job-{job_id}")

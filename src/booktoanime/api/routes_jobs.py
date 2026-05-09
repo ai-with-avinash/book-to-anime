@@ -56,8 +56,10 @@ def build_job_router() -> APIRouter:
         manifest = _load_manifest(request, job_id)
         chapters = _load_chapters(request, job_id)
         summary = _summarize(record, manifest=manifest, chapters=chapters)
+        # Jinja's tojson cannot serialize Pydantic models; pre-render to dicts.
+        chapters_json = [c.model_dump(mode="json") for c in summary.chapters]
         response = request.app.state.templates.TemplateResponse(
-            request, "job.html", {"job": summary}
+            request, "job.html", {"job": summary, "chapters_json": chapters_json}
         )
         return cast(HTMLResponse, response)
 

@@ -32,12 +32,16 @@ import uvicorn
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from booktoanime._dotenv import load_dotenv
 from booktoanime.api import AppSettings, ProviderFactory, create_app
 from booktoanime.parsing import PDFParser
 from booktoanime.pipeline.manifest import ProvidersConfig
 from booktoanime.providers.audio.kokoro import _factory as kokoro_factory
-from booktoanime.providers.base import GeneratedImage, VisualProvider
+from booktoanime.providers.base import GeneratedImage, LipSyncProvider, VisualProvider
 from booktoanime.providers.language.openai_compatible import build_openai_compatible
+from booktoanime.providers.lipsync.replicate_hosted import (
+    _factory as replicate_lipsync_factory,
+)
 from booktoanime.providers.visual.sdxl_diffusers import _factory as sdxl_factory
 
 
@@ -98,13 +102,30 @@ class PersonaOnlyVisual(VisualProvider):
         await self._base.close()
 
 
+def _env(key: str, default: str) -> str:
+    """Read env var with default. Empty string → default."""
+
+    value = os.environ.get(key, "").strip()
+    return value or default
+
+
+def _env_int(key: str, default: int) -> int:
+    raw = os.environ.get(key, "").strip()
+    return int(raw) if raw else default
+
+
+def _env_float(key: str, default: float) -> float:
+    raw = os.environ.get(key, "").strip()
+    return float(raw) if raw else default
+
+
 def _build_language() -> Any:
     return build_openai_compatible(
         {
-            "base_url": "http://localhost:11434/v1",
-            "model": "llama3.2:3b",
-            "api_key": "ollama",
-            "request_timeout_s": 300,
+            "base_url": _env("BOOKTOANIME_LLM_BASE_URL", "http://localhost:11434/v1"),
+            "model": _env("BOOKTOANIME_LLM_MODEL", "llama3.2:3b"),
+            "api_key": _env("BOOKTOANIME_LLM_API_KEY", "ollama"),
+            "request_timeout_s": _env_int("BOOKTOANIME_LLM_TIMEOUT_S", 300),
         }
     )
 
@@ -112,9 +133,9 @@ def _build_language() -> Any:
 def _build_audio() -> Any:
     return kokoro_factory(
         {
-            "voice_id": "af_bella",
-            "language": "en-US",
-            "sample_rate": 24000,
+            "voice_id": _env("BOOKTOANIME_TTS_VOICE_ID", "af_bella"),
+            "language": _env("BOOKTOANIME_TTS_LANGUAGE", "en-US"),
+            "sample_rate": _env_int("BOOKTOANIME_TTS_SAMPLE_RATE", 24000),
         }
     )
 
@@ -130,14 +151,22 @@ def _build_visual_factory(persona_dir: Path) -> Any:
     def _factory() -> VisualProvider:
         base = sdxl_factory(
             {
-                "checkpoint": "stabilityai/stable-diffusion-xl-base-1.0",
-                "ip_adapter_repo": "h94/IP-Adapter",
-                "ip_adapter_subfolder": "sdxl_models",
-                "ip_adapter_weights": "ip-adapter-plus_sdxl_vit-h.safetensors",
-                "width": 1024,
-                "height": 1024,
-                "steps": 20,
-                "guidance": 5.5,
+                "checkpoint": _env(
+                    "BOOKTOANIME_SDXL_CHECKPOINT",
+                    "stabilityai/stable-diffusion-xl-base-1.0",
+                ),
+                "ip_adapter_repo": _env("BOOKTOANIME_SDXL_IP_ADAPTER_REPO", "h94/IP-Adapter"),
+                "ip_adapter_subfolder": _env(
+                    "BOOKTOANIME_SDXL_IP_ADAPTER_SUBFOLDER", "sdxl_models"
+                ),
+                "ip_adapter_weights": _env(
+                    "BOOKTOANIME_SDXL_IP_ADAPTER_WEIGHTS",
+                    "ip-adapter-plus_sdxl_vit-h.safetensors",
+                ),
+                "width": _env_int("BOOKTOANIME_SDXL_WIDTH", 1024),
+                "height": _env_int("BOOKTOANIME_SDXL_HEIGHT", 1024),
+                "steps": _env_int("BOOKTOANIME_SDXL_STEPS", 20),
+                "guidance": _env_float("BOOKTOANIME_SDXL_GUIDANCE", 5.5),
             }
         )
         return PersonaOnlyVisual(base, persona_dir, user_persona)
@@ -145,7 +174,21 @@ def _build_visual_factory(persona_dir: Path) -> Any:
     return _factory
 
 
+def _build_lipsync() -> LipSyncProvider | None:
+    """Replicate-hosted SadTalker if ``REPLICATE_API_TOKEN`` is set, else None.
+
+    Returning None is a soft default — the orchestrator skips
+    MOUTH_ANIMATION when ``lipsync.enabled`` is false in the JobConfig and
+    raises a clear error if it's enabled but no provider is wired.
+    """
+
+    if not os.environ.get("REPLICATE_API_TOKEN"):
+        return None
+    return replicate_lipsync_factory({"api_key_env": "REPLICATE_API_TOKEN"})
+
+
 def main() -> None:
+    load_dotenv(REPO_ROOT / ".env")
     data_dir = REPO_ROOT / ".local-data"
     data_dir.mkdir(exist_ok=True)
     persona_dir = data_dir / "personas"
@@ -154,6 +197,7 @@ def main() -> None:
         language_factory=_build_language,
         audio_factory=_build_audio,
         visual_factory=_build_visual_factory(persona_dir),
+        lipsync_factory=_build_lipsync,
     )
     settings = AppSettings(
         data_dir=data_dir,
