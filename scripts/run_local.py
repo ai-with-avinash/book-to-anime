@@ -180,11 +180,23 @@ def _build_lipsync() -> LipSyncProvider | None:
     Returning None is a soft default — the orchestrator skips
     MOUTH_ANIMATION when ``lipsync.enabled`` is false in the JobConfig and
     raises a clear error if it's enabled but no provider is wired.
+
+    The Replicate model id is overridable via ``BOOKTOANIME_LIPSYNC_MODEL``
+    so users can switch forks (the original ``cjwbw/sadtalker`` was
+    retired) without code changes. ``BOOKTOANIME_LIPSYNC_VERSION`` pins a
+    specific weights hash if reproducibility matters.
     """
 
     if not os.environ.get("REPLICATE_API_TOKEN"):
         return None
-    return replicate_lipsync_factory({"api_key_env": "REPLICATE_API_TOKEN"})
+    sub_config: dict[str, Any] = {
+        "api_key_env": "REPLICATE_API_TOKEN",
+        "model": _env("BOOKTOANIME_LIPSYNC_MODEL", "lucataco/sadtalker"),
+    }
+    pinned_version = os.environ.get("BOOKTOANIME_LIPSYNC_VERSION", "").strip()
+    if pinned_version:
+        sub_config["version"] = pinned_version
+    return replicate_lipsync_factory(sub_config)
 
 
 def main() -> None:
