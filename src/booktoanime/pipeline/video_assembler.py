@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shlex
 import shutil
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -146,6 +147,9 @@ class VideoAssembler:
         images_index: ImagesIndex,
         job_dir: Path,
     ) -> None:
+        if not storyboard.shots:
+            raise FFmpegError("storyboard contains no shots; cannot assemble video")
+
         image_files = {item.shot_id: job_dir / item.file for item in images_index.items}
         audio_files = {item.shot_id: job_dir / item.file for item in audio_index.items}
 
@@ -201,6 +205,7 @@ class VideoAssembler:
             "-preset", self._config.preset,
             "-crf", str(self._config.crf),
             "-c:a", self._config.audio_codec,
+            "-movflags", "+faststart",
             "-shortest",
             str(out_path),
         ]
@@ -220,18 +225,23 @@ class VideoAssembler:
         # Per-shot video pre-processing: scale + zoompan for Ken Burns.
         for idx, shot in enumerate(storyboard.shots):
             frames = max(1, int(durations[shot.id] * fps))
+            frame_span = max(1, frames - 1)
             from_zoom = max(1.0, shot.ken_burns.from_[2])
             to_zoom = max(1.0, shot.ken_burns.to[2])
-            zoom_expr = f"{from_zoom:.4f}+(({to_zoom:.4f}-{from_zoom:.4f})*on/{frames})"
+            zoom_expr = (
+                f"{from_zoom:.4f}+(({to_zoom:.4f}-{from_zoom:.4f})*on/{frame_span})"
+            )
             from_x = max(0.0, min(0.999, shot.ken_burns.from_[0]))
             to_x = max(0.0, min(0.999, shot.ken_burns.to[0]))
             from_y = max(0.0, min(0.999, shot.ken_burns.from_[1]))
             to_y = max(0.0, min(0.999, shot.ken_burns.to[1]))
-            x_expr = f"iw*({from_x:.4f}+({to_x:.4f}-{from_x:.4f})*on/{frames})"
-            y_expr = f"ih*({from_y:.4f}+({to_y:.4f}-{from_y:.4f})*on/{frames})"
+            x_expr = f"iw*({from_x:.4f}+({to_x:.4f}-{from_x:.4f})*on/{frame_span})"
+            y_expr = f"ih*({from_y:.4f}+({to_y:.4f}-{from_y:.4f})*on/{frame_span})"
             video_filters.append(
-                f"[{idx}:v]scale={width}:{height}:force_original_aspect_ratio=cover,"
-                f"crop={width}:{height},setsar=1,"
+                # Contain-fit: scale within frame, pad with black so the full
+                # image (including face on portrait sources) is visible.
+                f"[{idx}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,"
                 f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':"
                 f"d={frames}:s={width}x{height}:fps={fps},"
                 f"trim=duration={durations[shot.id]:.3f},setpts=PTS-STARTPTS"
@@ -297,7 +307,7 @@ async def _default_runner(argv: Sequence[str], log_path: Path) -> None:
     stdout, stderr = await process.communicate()
     log_path.write_bytes(
         b"-- argv --\n"
-        + " ".join(argv).encode("utf-8", errors="replace")
+        + shlex.join(argv).encode("utf-8", errors="replace")
         + b"\n-- stdout --\n"
         + (stdout or b"")
         + b"\n-- stderr --\n"

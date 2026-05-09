@@ -1,0 +1,182 @@
+"""Run booktoanime locally with persona-only visuals (fast).
+
+Stack:
+    * LLM: Ollama (http://localhost:11434, model `llama3.2:3b`)
+    * TTS: Kokoro (real audio narration)
+    * Visual: persona reuse — one PNG per job, copied to every shot
+    * Assembly: real ffmpeg
+
+Persona source priority:
+    1. ``BOOKTOANIME_PERSONA_PATH`` env var → reuse that PNG (no model download).
+    2. SDXL `prepare()` → generates one anime portrait (~7GB download first run,
+       then ~30-60s per job on MPS).
+
+Per-shot ``render()`` copies the persona file. Image stage drops from ~35min
+(46 SDXL renders) to ~5s (46 file copies).
+
+Usage:
+    python scripts/run_local.py
+    BOOKTOANIME_PERSONA_PATH=~/my_anime_face.png python scripts/run_local.py
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import sys
+from pathlib import Path
+from typing import Any
+
+import uvicorn
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from booktoanime.api import AppSettings, ProviderFactory, create_app
+from booktoanime.parsing import PDFParser
+from booktoanime.pipeline.manifest import ProvidersConfig
+from booktoanime.providers.audio.kokoro import _factory as kokoro_factory
+from booktoanime.providers.base import GeneratedImage, VisualProvider
+from booktoanime.providers.language.openai_compatible import build_openai_compatible
+from booktoanime.providers.visual.sdxl_diffusers import _factory as sdxl_factory
+
+
+class PersonaOnlyVisual(VisualProvider):
+    """Wrap a base VisualProvider but emit one persona for every shot.
+
+    Removes the per-shot SDXL inference cost; only the persona generation
+    runs through the wrapped provider. If ``user_persona_path`` is set, even
+    that step is skipped — the file is copied straight into the persona dir.
+    """
+
+    name = "persona_only"
+
+    def __init__(
+        self,
+        base: VisualProvider,
+        persona_dir: Path,
+        user_persona_path: Path | None = None,
+    ) -> None:
+        self._base = base
+        self._persona_dir = persona_dir
+        self._user_persona_path = user_persona_path
+        self._persona_path: Path | None = None
+
+    async def prepare(self, *, anime_style: str, narrator_seed: int) -> Path:
+        self._persona_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = self._persona_dir / f"{anime_style}__{narrator_seed}.png"
+
+        if not cache_path.is_file():
+            if self._user_persona_path is not None:
+                shutil.copyfile(self._user_persona_path, cache_path)
+            else:
+                source = await self._base.prepare(
+                    anime_style=anime_style, narrator_seed=narrator_seed
+                )
+                if source != cache_path:
+                    shutil.copyfile(source, cache_path)
+
+        self._persona_path = cache_path
+        return cache_path
+
+    async def render(self, request: Any, out_path: Path) -> GeneratedImage:
+        if self._persona_path is None:
+            raise RuntimeError(
+                "PersonaOnlyVisual.render() called before prepare(); "
+                "pipeline must call prepare() first."
+            )
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(self._persona_path, out_path)
+        return GeneratedImage(
+            path=out_path,
+            seed=request.seed,
+            width=request.width,
+            height=request.height,
+        )
+
+    async def close(self) -> None:
+        await self._base.close()
+
+
+def _build_language() -> Any:
+    return build_openai_compatible(
+        {
+            "base_url": "http://localhost:11434/v1",
+            "model": "llama3.2:3b",
+            "api_key": "ollama",
+            "request_timeout_s": 300,
+        }
+    )
+
+
+def _build_audio() -> Any:
+    return kokoro_factory(
+        {
+            "voice_id": "af_bella",
+            "language": "en-US",
+            "sample_rate": 24000,
+        }
+    )
+
+
+def _build_visual_factory(persona_dir: Path) -> Any:
+    user_persona_env = os.environ.get("BOOKTOANIME_PERSONA_PATH")
+    user_persona = Path(user_persona_env).expanduser() if user_persona_env else None
+    if user_persona is not None and not user_persona.is_file():
+        raise FileNotFoundError(
+            f"BOOKTOANIME_PERSONA_PATH points to {user_persona!r}, but no file there."
+        )
+
+    def _factory() -> VisualProvider:
+        base = sdxl_factory(
+            {
+                "checkpoint": "stabilityai/stable-diffusion-xl-base-1.0",
+                "ip_adapter_repo": "h94/IP-Adapter",
+                "ip_adapter_subfolder": "sdxl_models",
+                "ip_adapter_weights": "ip-adapter-plus_sdxl_vit-h.safetensors",
+                "width": 1024,
+                "height": 1024,
+                "steps": 20,
+                "guidance": 5.5,
+            }
+        )
+        return PersonaOnlyVisual(base, persona_dir, user_persona)
+
+    return _factory
+
+
+def main() -> None:
+    data_dir = REPO_ROOT / ".local-data"
+    data_dir.mkdir(exist_ok=True)
+    persona_dir = data_dir / "personas"
+
+    factory = ProviderFactory(
+        language_factory=_build_language,
+        audio_factory=_build_audio,
+        visual_factory=_build_visual_factory(persona_dir),
+    )
+    settings = AppSettings(
+        data_dir=data_dir,
+        provider_factory=factory,
+        parser_factory=PDFParser,
+        config_overrides={
+            "providers_obj": ProvidersConfig(
+                language="openai_compatible",
+                audio="kokoro",
+                visual="sdxl_diffusers",
+            ),
+            "providers": {
+                "language": "openai_compatible",
+                "audio": "kokoro",
+                "visual": "sdxl_diffusers",
+            },
+        },
+    )
+
+    app = create_app(settings)
+    config = uvicorn.Config(app, host="127.0.0.1", port=8765, log_level="info", loop="asyncio")
+    uvicorn.Server(config).run()
+
+
+if __name__ == "__main__":
+    main()

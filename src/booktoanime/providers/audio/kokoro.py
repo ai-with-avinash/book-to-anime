@@ -236,7 +236,20 @@ def _audio_from_result(result: Any) -> np.ndarray | None:
     if isinstance(result, np.ndarray):
         return result
 
-    last = result[-1] if isinstance(result, (tuple, list)) else result
+    # Kokoro >=0.9 yields a KPipeline.Result dataclass with an `audio` field;
+    # older versions yielded a (graphemes, phonemes, audio) tuple. Handle both
+    # plus any other indexable container by falling back to the last element.
+    last: Any = getattr(result, "audio", None)
+    if last is None:
+        if isinstance(result, (tuple, list)):
+            last = result[-1]
+        elif hasattr(result, "__getitem__") and hasattr(result, "__len__"):
+            try:
+                last = result[len(result) - 1]
+            except (IndexError, TypeError):
+                last = result
+        else:
+            last = result
     if hasattr(last, "detach"):  # torch.Tensor
         last = last.detach().cpu().numpy()
     if isinstance(last, np.ndarray):
