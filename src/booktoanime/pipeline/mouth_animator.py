@@ -89,20 +89,22 @@ class MouthAnimator:
         total = len(storyboard.shots)
         completed_count = len(existing_ids)
         new_records: dict[str, MouthShotRecord] = {}
-        first_error: BookToAnimeError | None = None
+        # ``stop`` is set by the first failing task; subsequent tasks see it
+        # when they acquire the semaphore and bail without starting work.
+        # ``Event.set()`` is idempotent + atomic, so concurrent setters cannot
+        # race, unlike the previous ``nonlocal first_error`` mutation.
+        stop = asyncio.Event()
 
         async def animate_one(shot: Shot) -> None:
-            nonlocal first_error
             if shot.id in existing_ids:
                 return
             async with semaphore:
-                if first_error is not None:
+                if stop.is_set():
                     raise asyncio.CancelledError()
                 try:
                     record = await self._animate_one(shot, image_paths[shot.id], audio_paths[shot.id], mouth_dir)
                 except BookToAnimeError as exc:
-                    if first_error is None:
-                        first_error = exc
+                    stop.set()
                     await self._bus.emit(
                         ProgressEvent(
                             kind=ProgressKind.SHOT_FAILED,
@@ -126,12 +128,15 @@ class MouthAnimator:
         tasks = [asyncio.create_task(animate_one(shot)) for shot in storyboard.shots]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
+        # Determine the first error post-gather, in shot order. Deterministic
+        # regardless of task scheduling.
+        first_error: BookToAnimeError | None = None
         for shot, result in zip(storyboard.shots, results, strict=True):
+            if isinstance(result, asyncio.CancelledError):
+                continue
             if isinstance(result, BookToAnimeError):
                 if first_error is None:
                     first_error = result
-                continue
-            if isinstance(result, asyncio.CancelledError):
                 continue
             if isinstance(result, BaseException):
                 if first_error is None:

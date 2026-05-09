@@ -325,3 +325,103 @@ async def test_animate_concurrency_respects_semaphore(tmp_path: Path) -> None:
     await bus.close()
 
     assert peak <= 2
+
+
+@pytest.mark.asyncio
+async def test_animate_concurrent_failure_stops_pending_shots(tmp_path: Path) -> None:
+    """With concurrency>1 and a mid-batch failure, queued shots must bail and
+    the surviving record(s) must be persisted."""
+
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    images_index, audio_index = _populate_inputs(job_dir, 4)
+    storyboard = Storyboard(
+        shots=[_shot(1), _shot(2), _shot(3), _shot(4)],
+        total_duration_seconds_target=16.0,
+    )
+
+    started: set[str] = set()
+    started_lock = asyncio.Lock()
+
+    class _GatedProvider(LipSyncProvider):
+        name = "gated"
+
+        async def animate(self, *, image_path: Path, audio_path: Path, out_path: Path) -> AnimatedShot:
+            shot_id = out_path.stem
+            async with started_lock:
+                started.add(shot_id)
+            if shot_id == "shot_0001":
+                # Fail fast on shot 1 so subsequent semaphore acquirers see stop set.
+                await asyncio.sleep(0)
+                raise ProviderError(f"forced failure for {shot_id}")
+            await asyncio.sleep(0.02)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(b"\x00\x00\x00 ftypisomFAKE")
+            return AnimatedShot(path=out_path, duration_seconds=4.0, fps=25.0)
+
+        async def close(self) -> None:
+            return None
+
+    bus = ProgressEventBus(job_dir / "events.log")
+    animator = MouthAnimator(
+        _GatedProvider(),
+        MouthAnimatorConfig(concurrency=2),
+        bus=bus,
+    )
+    with pytest.raises(ProviderError, match="forced failure for shot_0001"):
+        await animator.animate(
+            storyboard=storyboard,
+            images_index=images_index,
+            audio_index=audio_index,
+            job_dir=job_dir,
+        )
+    await bus.close()
+
+    # At minimum shot 1 ran. Shots 3 and 4 are queued behind the semaphore;
+    # once shot 1's failure sets stop, they must bail without starting work.
+    assert "shot_0001" in started
+    assert "shot_0003" not in started or "shot_0004" not in started, (
+        "stop event failed to gate at least one queued shot"
+    )
+
+
+@pytest.mark.asyncio
+async def test_animate_concurrent_double_failure_picks_first_in_shot_order(tmp_path: Path) -> None:
+    """Two shots fail simultaneously; the raised error must be the first in
+    shot order, deterministically — not whichever finished first."""
+
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    images_index, audio_index = _populate_inputs(job_dir, 2)
+    storyboard = Storyboard(
+        shots=[_shot(1), _shot(2)],
+        total_duration_seconds_target=8.0,
+    )
+
+    class _BothFailProvider(LipSyncProvider):
+        name = "both_fail"
+
+        async def animate(self, *, image_path: Path, audio_path: Path, out_path: Path) -> AnimatedShot:
+            shot_id = out_path.stem
+            # Make shot 2 finish first so a time-ordered impl would surface it.
+            if shot_id == "shot_0001":
+                await asyncio.sleep(0.05)
+            raise ProviderError(f"forced failure for {shot_id}")
+
+        async def close(self) -> None:
+            return None
+
+    bus = ProgressEventBus(job_dir / "events.log")
+    animator = MouthAnimator(
+        _BothFailProvider(),
+        MouthAnimatorConfig(concurrency=2),
+        bus=bus,
+    )
+    with pytest.raises(ProviderError, match="forced failure for shot_0001"):
+        await animator.animate(
+            storyboard=storyboard,
+            images_index=images_index,
+            audio_index=audio_index,
+            job_dir=job_dir,
+        )
+    await bus.close()

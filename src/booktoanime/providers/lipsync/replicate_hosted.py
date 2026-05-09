@@ -108,10 +108,14 @@ class ReplicateHostedProvider(LipSyncProvider):
         image_path: Path,
         audio_path: Path,
     ) -> Mapping[str, Any]:
+        # Base64-encoding the audio (often >1 MiB) blocks the loop; do it in a
+        # worker thread alongside the file read.
+        source_image_url = await asyncio.to_thread(_to_data_url, image_path, "image/png")
+        driven_audio_url = await asyncio.to_thread(_to_data_url, audio_path, "audio/wav")
         payload: dict[str, Any] = {
             "input": {
-                "source_image": _to_data_url(image_path, "image/png"),
-                "driven_audio": _to_data_url(audio_path, "audio/wav"),
+                "source_image": source_image_url,
+                "driven_audio": driven_audio_url,
                 "still": self._still_mode,
                 "preprocess": self._preprocess,
             },
@@ -147,11 +151,18 @@ class ReplicateHostedProvider(LipSyncProvider):
         )
 
     async def _stream_to(self, url: str, dest: Path) -> None:
+        # Pin to https so a compromised model output cannot redirect us at
+        # file:// or another scheme that httpx would otherwise follow.
+        if not url.lower().startswith("https://"):
+            raise ProviderError(f"replicate output url must be https: {url!r}")
         async with self._client.stream("GET", url) as response:
             _raise_for_status(response)
-            with dest.open("wb") as handle:
+            handle = await asyncio.to_thread(dest.open, "wb")
+            try:
                 async for chunk in response.aiter_bytes():
-                    handle.write(chunk)
+                    await asyncio.to_thread(handle.write, chunk)
+            finally:
+                await asyncio.to_thread(handle.close)
 
 
 def _to_data_url(path: Path, mime: str) -> str:

@@ -278,11 +278,16 @@ def _generate_job_id() -> str:
 
 
 async def _stream_upload(upload: UploadFile, dest: Path) -> None:
-    """Stream an upload to disk with a size cap. ``UploadFile.read`` is async."""
+    """Stream an upload to disk with a size cap. ``UploadFile.read`` is async.
+
+    Disk writes are hopped through ``asyncio.to_thread`` so a slow filesystem
+    (NFS, sshfs) cannot stall the event loop while the upload streams.
+    """
 
     written = 0
     chunk_size = 1024 * 1024
-    with dest.open("wb") as handle:
+    handle = await asyncio.to_thread(dest.open, "wb")
+    try:
         while True:
             chunk = await upload.read(chunk_size)
             if not chunk:
@@ -293,7 +298,7 @@ async def _stream_upload(upload: UploadFile, dest: Path) -> None:
                     status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                     detail=f"upload exceeds {_MAX_UPLOAD_BYTES} bytes",
                 )
-            handle.write(chunk)
+            await asyncio.to_thread(handle.write, chunk)
+    finally:
+        await asyncio.to_thread(handle.close)
     await upload.close()
-    # Yield once after the upload so we don't stall the event loop on the next request.
-    await asyncio.sleep(0)

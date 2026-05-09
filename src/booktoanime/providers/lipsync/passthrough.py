@@ -51,7 +51,7 @@ class PassthroughLipSyncProvider(LipSyncProvider):
         if not audio_path.is_file():
             raise ProviderError(f"shot audio missing: {audio_path}")
 
-        duration = _read_wav_duration(audio_path)
+        duration = await asyncio.to_thread(_read_wav_duration, audio_path)
         if duration <= 0.0:
             raise ProviderError(f"shot audio has zero duration: {audio_path}")
 

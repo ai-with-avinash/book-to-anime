@@ -20,6 +20,7 @@ from ..parsing import PDFParser
 from ..pipeline.video_assembler import FFmpegRunner
 from ..state import JobRepository, open_database
 from .deps import JobRunner, ProviderFactory
+from .routes_files import build_files_router
 from .routes_jobs import build_job_router
 from .routes_sse import build_sse_router
 
@@ -99,5 +100,6 @@ def create_app(settings: AppSettings) -> FastAPI:
 
     app.include_router(build_job_router(), prefix="")
     app.include_router(build_sse_router(), prefix="")
+    app.include_router(build_files_router(), prefix="")
 
     return app

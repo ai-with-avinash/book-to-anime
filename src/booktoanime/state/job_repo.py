@@ -124,11 +124,17 @@ class JobRepository:
         current_stage: str | None = None,
         error_message: str | None = None,
     ) -> None:
+        # COALESCE keeps existing current_stage / error_message when callers
+        # update only the status (e.g. RUNNING/COMPLETED transitions). Without
+        # it, a success-path update would null out the last stage marker.
         with self._lock, transaction(self._conn):
             self._conn.execute(
                 """
                 UPDATE jobs
-                SET status = ?, current_stage = ?, updated_at = ?, error_message = ?
+                SET status = ?,
+                    current_stage = COALESCE(?, current_stage),
+                    updated_at = ?,
+                    error_message = COALESCE(?, error_message)
                 WHERE job_id = ?
                 """,
                 (

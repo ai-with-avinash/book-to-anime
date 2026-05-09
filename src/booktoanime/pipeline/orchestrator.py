@@ -19,6 +19,7 @@ provider registry.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import shutil
 from dataclasses import dataclass
@@ -103,7 +104,7 @@ class PipelineOrchestrator:
                 if manifest.stage_status(stage).value == "completed":
                     continue
                 manifest.mark_started(stage)
-                manifest.save(manifest_path)
+                await asyncio.to_thread(manifest.save, manifest_path)
                 repo.update_status(
                     manifest.job_id, status=JobStatus.RUNNING, current_stage=stage.value
                 )
@@ -118,7 +119,7 @@ class PipelineOrchestrator:
                     await self._run_stage(stage, manifest=manifest, job_dir=job_dir)
                 except BookToAnimeError as exc:
                     manifest.mark_failed(stage, str(exc))
-                    manifest.save(manifest_path)
+                    await asyncio.to_thread(manifest.save, manifest_path)
                     repo.update_status(
                         manifest.job_id,
                         status=JobStatus.FAILED,
@@ -136,7 +137,7 @@ class PipelineOrchestrator:
                     raise
 
                 manifest.mark_completed(stage)
-                manifest.save(manifest_path)
+                await asyncio.to_thread(manifest.save, manifest_path)
                 await self._deps.bus.emit(
                     ProgressEvent(
                         kind=ProgressKind.STAGE_COMPLETED,
@@ -177,8 +178,6 @@ class PipelineOrchestrator:
             raise NotImplementedError(stage)
 
     async def _run_parsing(self, *, job_dir: Path) -> None:
-        import asyncio
-
         source = job_dir / "source.pdf"
         if not source.is_file():
             raise ParsingError(f"missing source PDF at {source}")
@@ -187,7 +186,7 @@ class PipelineOrchestrator:
         parsed = await asyncio.to_thread(parser.parse, source, job_dir=job_dir)
         out_path = job_dir / "extracted" / "parsed.json"
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_bytes(parsed.to_json_bytes())
+        await asyncio.to_thread(out_path.write_bytes, parsed.to_json_bytes())
 
     async def _run_structuring(
         self,
@@ -220,8 +219,9 @@ class PipelineOrchestrator:
                 voice_id=manifest.config.narration.voice_id,
             )
         )
-        StructuredDocument(topics=sections, narrator_persona=persona).save(
-            job_dir / "structured.json"
+        await asyncio.to_thread(
+            StructuredDocument(topics=sections, narrator_persona=persona).save,
+            job_dir / "structured.json",
         )
 
     async def _run_storyboard(
@@ -235,7 +235,7 @@ class PipelineOrchestrator:
             StoryboardConfig(anime_style=manifest.config.anime_style)
         )
         storyboard = builder.build(structured.topics, structured.narrator_persona)
-        storyboard.save(job_dir / "storyboard.json")
+        await asyncio.to_thread(storyboard.save, job_dir / "storyboard.json")
 
     async def _run_images(
         self,
@@ -270,7 +270,7 @@ class PipelineOrchestrator:
             persona_dst_dir.mkdir(parents=True, exist_ok=True)
             persona_dst = persona_dst_dir / persona_reference.name
             if persona_reference.resolve() != persona_dst.resolve():
-                shutil.copyfile(persona_reference, persona_dst)
+                await asyncio.to_thread(shutil.copyfile, persona_reference, persona_dst)
             persona_rel = f"personas/{persona_dst.name}"
             structured = structured.model_copy(
                 update={
@@ -279,7 +279,7 @@ class PipelineOrchestrator:
                     )
                 }
             )
-            structured.save(job_dir / "structured.json")
+            await asyncio.to_thread(structured.save, job_dir / "structured.json")
 
     async def _run_audio(
         self,
