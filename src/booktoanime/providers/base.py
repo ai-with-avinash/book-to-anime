@@ -115,6 +115,21 @@ class GeneratedAudio:
 
 
 @dataclass(frozen=True)
+class AnimatedShot:
+    """One per-shot lip-synced video clip produced by a :class:`LipSyncProvider`.
+
+    ``duration_seconds`` is the *measured* output length (re-probed from the
+    file). It can drift from the input WAV by a frame or two because some
+    lip-sync models snap to fixed FPS — assemblers that splice these clips
+    together must use this measured value, not the source audio length.
+    """
+
+    path: Path
+    duration_seconds: float
+    fps: float
+
+
+@dataclass(frozen=True)
 class ImageExplanation:
     """A grounded explanation of an embedded PDF image.
 
@@ -204,6 +219,32 @@ class VisualProvider(ABC):
     @abstractmethod
     async def render(self, request: ImageGenRequest, out_path: Path) -> GeneratedImage:
         """Render one shot image to ``out_path``."""
+
+    @abstractmethod
+    async def close(self) -> None: ...
+
+
+class LipSyncProvider(ABC):
+    """Pluggable lip-sync provider.
+
+    Given a still anime portrait and a per-shot narration WAV, produce a
+    short mp4 with mouth motion roughly synced to the audio. Adapters that
+    require model downloads SHOULD cache them under ``data_dir/models/``;
+    adapters that hit a hosted API MUST honor cancellation and surface
+    actionable errors via :class:`booktoanime.errors.ProviderError`.
+    """
+
+    name: str
+
+    @abstractmethod
+    async def animate(
+        self,
+        *,
+        image_path: Path,
+        audio_path: Path,
+        out_path: Path,
+    ) -> AnimatedShot:
+        """Write a lip-synced clip to ``out_path`` and return its metadata."""
 
     @abstractmethod
     async def close(self) -> None: ...

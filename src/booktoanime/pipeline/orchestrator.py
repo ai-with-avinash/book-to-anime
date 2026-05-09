@@ -24,14 +24,16 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..errors import BookToAnimeError, ParsingError
+from ..errors import BookToAnimeError, ParsingError, ProviderError
 from ..parsing import PDFParser
 from ..parsing.models import ParsedDocument
 from ..providers import AudioProvider, LanguageProvider, VisualProvider
+from ..providers.base import LipSyncProvider
 from ..state import JobRepository, JobStatus
 from .artifacts import (
     AudioIndex,
     ImagesIndex,
+    MouthIndex,
     NarratorPersona,
     Storyboard,
     StructuredDocument,
@@ -39,6 +41,7 @@ from .artifacts import (
 from .events import ProgressEvent, ProgressEventBus, ProgressKind
 from .image_renderer import ImageRendererConfig, ShotImageRenderer
 from .manifest import JobManifest
+from .mouth_animator import MouthAnimator, MouthAnimatorConfig
 from .narrator_persona import PersonaSeederConfig, derive_persona
 from .stages import STAGE_ORDER, Stage
 from .storyboard import StoryboardBuilder, StoryboardConfig
@@ -62,6 +65,10 @@ class PipelineDependencies:
     # Optional ffmpeg runner override (tests inject a stub that fakes the binary).
     ffmpeg_runner: FFmpegRunner | None = None
     ffmpeg_binary: str | None = None
+    # Lip-sync is opt-in. When the JobConfig disables it the orchestrator
+    # short-circuits the MOUTH_ANIMATION stage without touching this provider,
+    # so callers that don't ship lip-sync can leave it None.
+    lipsync: LipSyncProvider | None = None
 
 
 class PipelineOrchestrator:
@@ -162,6 +169,8 @@ class PipelineOrchestrator:
             await self._run_images(manifest=manifest, job_dir=job_dir)
         elif stage == Stage.AUDIO:
             await self._run_audio(manifest=manifest, job_dir=job_dir)
+        elif stage == Stage.MOUTH_ANIMATION:
+            await self._run_mouth_animation(manifest=manifest, job_dir=job_dir)
         elif stage == Stage.ASSEMBLY:
             await self._run_assembly(manifest=manifest, job_dir=job_dir)
         else:  # pragma: no cover - exhaustively handled above
@@ -291,6 +300,47 @@ class PipelineOrchestrator:
         )
         await narrator.synthesize(storyboard=storyboard, job_dir=job_dir)
 
+    async def _run_mouth_animation(
+        self,
+        *,
+        manifest: JobManifest,
+        job_dir: Path,
+    ) -> None:
+        if not manifest.config.lipsync.enabled:
+            await self._deps.bus.emit(
+                ProgressEvent(
+                    kind=ProgressKind.INFO,
+                    stage=Stage.MOUTH_ANIMATION.value,
+                    message="lipsync disabled; skipping mouth animation",
+                )
+            )
+            return
+
+        if self._deps.lipsync is None:
+            raise ProviderError(
+                "lipsync.enabled is true but no LipSyncProvider was wired into "
+                "PipelineDependencies; pass `lipsync=...` from the launcher or "
+                "set lipsync.enabled to false in the job config."
+            )
+
+        storyboard = Storyboard.from_path(job_dir / "storyboard.json")
+        images_index = ImagesIndex.from_path(job_dir / "images" / "index.json")
+        audio_index = AudioIndex.from_path(job_dir / "audio" / "index.json")
+
+        animator = MouthAnimator(
+            self._deps.lipsync,
+            MouthAnimatorConfig(
+                concurrency=_concurrency_for_profile(manifest.config.profile),
+            ),
+            bus=self._deps.bus,
+        )
+        await animator.animate(
+            storyboard=storyboard,
+            images_index=images_index,
+            audio_index=audio_index,
+            job_dir=job_dir,
+        )
+
     async def _run_assembly(
         self,
         *,
@@ -300,11 +350,16 @@ class PipelineOrchestrator:
         storyboard = Storyboard.from_path(job_dir / "storyboard.json")
         audio_index = AudioIndex.from_path(job_dir / "audio" / "index.json")
         images_index = ImagesIndex.from_path(job_dir / "images" / "index.json")
+        mouth_index_path = job_dir / "mouth" / "index.json"
+        mouth_index: MouthIndex | None = None
+        if manifest.config.lipsync.enabled and mouth_index_path.is_file():
+            mouth_index = MouthIndex.from_path(mouth_index_path)
 
         assembler = VideoAssembler(
             VideoAssemblerConfig(
                 width=_width_for_aspect(manifest.config.aspect_ratio),
                 height=_height_for_aspect(manifest.config.aspect_ratio),
+                preserve_ken_burns=manifest.config.lipsync.preserve_ken_burns,
             ),
             bus=self._deps.bus,
             runner=self._deps.ffmpeg_runner,
@@ -314,6 +369,7 @@ class PipelineOrchestrator:
             storyboard=storyboard,
             audio_index=audio_index,
             images_index=images_index,
+            mouth_index=mouth_index,
             job_dir=job_dir,
         )
 

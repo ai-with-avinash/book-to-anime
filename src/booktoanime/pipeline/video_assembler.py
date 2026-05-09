@@ -30,7 +30,14 @@ from pathlib import Path
 from ..errors import BookToAnimeError
 from .artifacts import (
     AudioIndex,
+    ChapterRecord,
+    ChaptersIndex,
     ImagesIndex,
+    MouthIndex,
+    MouthShotRecord,
+    Shot,
+    ShotAudioRecord,
+    ShotImageRecord,
     Storyboard,
 )
 from .events import ProgressEvent, ProgressEventBus, ProgressKind
@@ -56,6 +63,10 @@ class VideoAssemblerConfig:
     audio_codec: str = "aac"
     crf: int = 20
     preset: str = "medium"
+    # When a per-shot lip-sync mp4 is present we usually disable Ken Burns
+    # so two motion sources (camera + mouth) don't fight. Set True to keep
+    # the zoompan even on lip-synced shots.
+    preserve_ken_burns: bool = False
 
 
 class VideoAssembler:
@@ -83,6 +94,7 @@ class VideoAssembler:
         audio_index: AudioIndex,
         images_index: ImagesIndex,
         job_dir: Path,
+        mouth_index: MouthIndex | None = None,
     ) -> Path:
         out_path = job_dir / "output.mp4"
         if out_path.is_file() and out_path.stat().st_size > 0:
@@ -111,19 +123,99 @@ class VideoAssembler:
                 )
             )
 
+        chapters_dir = job_dir / "chapters"
+        chapters_dir.mkdir(parents=True, exist_ok=True)
+        chapter_groups = _group_by_topic(storyboard)
+        chapter_records: list[ChapterRecord] = []
+
+        for chapter_idx, (topic_id, shots) in enumerate(chapter_groups, start=1):
+            chapter_filename = f"chapter_{chapter_idx:03d}.mp4"
+            chapter_path = chapters_dir / chapter_filename
+            chapter_srt_filename = f"chapter_{chapter_idx:03d}.srt"
+            chapter_srt_path = chapters_dir / chapter_srt_filename
+
+            sub_storyboard = _subset_storyboard(storyboard, shots, audio_index)
+            sub_audio = _subset_audio(audio_index, shots)
+            sub_images = _subset_images(images_index, shots)
+            sub_mouth = _subset_mouth(mouth_index, shots) if mouth_index is not None else None
+            chapter_duration = sum(item.duration_seconds for item in sub_audio.items)
+
+            if self._write_subtitles:
+                write_srt(
+                    storyboard=sub_storyboard,
+                    audio_index=sub_audio,
+                    out_path=chapter_srt_path,
+                )
+
+            await self._render_one(
+                storyboard=sub_storyboard,
+                audio_index=sub_audio,
+                images_index=sub_images,
+                mouth_index=sub_mouth,
+                job_dir=job_dir,
+                out_path=chapter_path,
+                log_path=job_dir / "logs" / f"ffmpeg_{chapter_filename}.log",
+                label=f"chapter {chapter_idx}/{len(chapter_groups)} ({topic_id})",
+            )
+
+            chapter_records.append(
+                ChapterRecord(
+                    topic_id=topic_id,
+                    order=chapter_idx,
+                    file=str(chapter_path.relative_to(job_dir).as_posix()),
+                    srt_file=str(chapter_srt_path.relative_to(job_dir).as_posix()),
+                    duration_seconds=chapter_duration,
+                )
+            )
+
+        ChaptersIndex(items=chapter_records).save(chapters_dir / "index.json")
+
+        await self._concat_chapters(
+            chapter_paths=[chapters_dir / f"chapter_{rec.order:03d}.mp4" for rec in chapter_records],
+            out_path=out_path,
+            log_path=job_dir / "logs" / "ffmpeg_concat.log",
+        )
+
+        if not out_path.is_file() or out_path.stat().st_size == 0:
+            raise FFmpegError(f"ffmpeg completed but {out_path.name} was not produced")
+
+        return out_path
+
+    async def _render_one(
+        self,
+        *,
+        storyboard: Storyboard,
+        audio_index: AudioIndex,
+        images_index: ImagesIndex,
+        mouth_index: MouthIndex | None,
+        job_dir: Path,
+        out_path: Path,
+        log_path: Path,
+        label: str,
+    ) -> None:
+        if out_path.is_file() and out_path.stat().st_size > 0:
+            await self._bus.emit(
+                ProgressEvent(
+                    kind=ProgressKind.INFO,
+                    stage=Stage.ASSEMBLY.value,
+                    message=f"reusing {label} ({out_path.name})",
+                )
+            )
+            return
+
         argv = self._build_command(
             storyboard=storyboard,
             audio_index=audio_index,
             images_index=images_index,
+            mouth_index=mouth_index,
             job_dir=job_dir,
             out_path=out_path,
         )
-        log_path = job_dir / "logs" / "ffmpeg.log"
         await self._bus.emit(
             ProgressEvent(
                 kind=ProgressKind.INFO,
                 stage=Stage.ASSEMBLY.value,
-                message=f"running ffmpeg ({len(storyboard.shots)} shots)",
+                message=f"running ffmpeg for {label} ({len(storyboard.shots)} shots)",
             )
         )
         try:
@@ -136,7 +228,49 @@ class VideoAssembler:
         if not out_path.is_file() or out_path.stat().st_size == 0:
             raise FFmpegError(f"ffmpeg completed but {out_path.name} was not produced")
 
-        return out_path
+    async def _concat_chapters(
+        self,
+        *,
+        chapter_paths: Sequence[Path],
+        out_path: Path,
+        log_path: Path,
+    ) -> None:
+        if not chapter_paths:
+            raise FFmpegError("no chapters to concat; cannot produce output.mp4")
+
+        # ffmpeg's concat demuxer reads a text manifest. Using stream-copy
+        # avoids re-encoding because every chapter shares the same codec
+        # parameters from VideoAssemblerConfig.
+        list_path = out_path.parent / "chapters" / "_concat.txt"
+        list_path.parent.mkdir(parents=True, exist_ok=True)
+        list_path.write_text(
+            "\n".join(f"file '{path.resolve().as_posix()}'" for path in chapter_paths) + "\n",
+            encoding="utf-8",
+        )
+
+        argv = [
+            self._binary,
+            "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", str(list_path),
+            "-c", "copy",
+            "-movflags", "+faststart",
+            str(out_path),
+        ]
+        await self._bus.emit(
+            ProgressEvent(
+                kind=ProgressKind.INFO,
+                stage=Stage.ASSEMBLY.value,
+                message=f"concatenating {len(chapter_paths)} chapter(s) into {out_path.name}",
+            )
+        )
+        try:
+            await self._runner(argv, log_path)
+        except FFmpegError:
+            raise
+        except Exception as exc:
+            raise FFmpegError(f"ffmpeg concat failed: {exc}") from exc
 
     # ----------------------------------------------------------- internals
 
@@ -172,6 +306,7 @@ class VideoAssembler:
         storyboard: Storyboard,
         audio_index: AudioIndex,
         images_index: ImagesIndex,
+        mouth_index: MouthIndex | None,
         job_dir: Path,
         out_path: Path,
     ) -> list[str]:
@@ -181,21 +316,32 @@ class VideoAssembler:
 
         image_paths = {item.shot_id: job_dir / item.file for item in images_index.items}
         audio_paths = {item.shot_id: job_dir / item.file for item in audio_index.items}
+        mouth_paths: dict[str, Path] = {}
+        if mouth_index is not None:
+            mouth_paths = {item.shot_id: job_dir / item.file for item in mouth_index.items}
 
         argv: list[str] = [self._binary, "-y", "-hide_banner", "-loglevel", "error"]
 
         for shot in storyboard.shots:
-            argv += [
-                "-loop", "1",
-                "-t", f"{durations[shot.id]:.3f}",
-                "-i", str(image_paths[shot.id]),
-            ]
+            mouth_path = mouth_paths.get(shot.id)
+            if mouth_path is not None and mouth_path.is_file():
+                # Lip-synced mp4 already carries timing + frames. Use -an
+                # so the mp4's embedded audio doesn't conflict with the
+                # external WAV we add separately.
+                argv += ["-an", "-i", str(mouth_path)]
+            else:
+                argv += [
+                    "-loop", "1",
+                    "-t", f"{durations[shot.id]:.3f}",
+                    "-i", str(image_paths[shot.id]),
+                ]
         for shot in storyboard.shots:
             argv += ["-i", str(audio_paths[shot.id])]
 
         filter_complex = self._build_filtergraph(
             storyboard=storyboard,
             durations=durations,
+            mouth_paths=mouth_paths,
         )
         argv += ["-filter_complex", filter_complex, "-map", "[vout]", "-map", "[aout]"]
         argv += [
@@ -216,36 +362,51 @@ class VideoAssembler:
         *,
         storyboard: Storyboard,
         durations: dict[str, float],
+        mouth_paths: dict[str, Path] | None = None,
     ) -> str:
         width = self._config.width
         height = self._config.height
         fps = self._config.fps
+        preserve_kb = self._config.preserve_ken_burns
+        mouth_paths = mouth_paths or {}
 
         video_filters: list[str] = []
-        # Per-shot video pre-processing: scale + zoompan for Ken Burns.
+        # Per-shot video pre-processing: scale + zoompan for Ken Burns. When a
+        # lip-sync mp4 is present, skip zoompan unless ``preserve_ken_burns``
+        # is set — combining camera motion with mouth motion looks unnatural.
         for idx, shot in enumerate(storyboard.shots):
-            frames = max(1, int(durations[shot.id] * fps))
-            frame_span = max(1, frames - 1)
-            from_zoom = max(1.0, shot.ken_burns.from_[2])
-            to_zoom = max(1.0, shot.ken_burns.to[2])
-            zoom_expr = (
-                f"{from_zoom:.4f}+(({to_zoom:.4f}-{from_zoom:.4f})*on/{frame_span})"
-            )
-            from_x = max(0.0, min(0.999, shot.ken_burns.from_[0]))
-            to_x = max(0.0, min(0.999, shot.ken_burns.to[0]))
-            from_y = max(0.0, min(0.999, shot.ken_burns.from_[1]))
-            to_y = max(0.0, min(0.999, shot.ken_burns.to[1]))
-            x_expr = f"iw*({from_x:.4f}+({to_x:.4f}-{from_x:.4f})*on/{frame_span})"
-            y_expr = f"ih*({from_y:.4f}+({to_y:.4f}-{from_y:.4f})*on/{frame_span})"
-            video_filters.append(
-                # Contain-fit: scale within frame, pad with black so the full
-                # image (including face on portrait sources) is visible.
+            shot_has_mouth = shot.id in mouth_paths and mouth_paths[shot.id].is_file()
+            apply_zoompan = (not shot_has_mouth) or preserve_kb
+
+            base_filter = (
                 f"[{idx}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,"
-                f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':"
-                f"d={frames}:s={width}x{height}:fps={fps},"
-                f"trim=duration={durations[shot.id]:.3f},setpts=PTS-STARTPTS"
-                f"[v{idx}]"
+                f"fps={fps}"
+            )
+
+            if apply_zoompan:
+                frames = max(1, int(durations[shot.id] * fps))
+                frame_span = max(1, frames - 1)
+                from_zoom = max(1.0, shot.ken_burns.from_[2])
+                to_zoom = max(1.0, shot.ken_burns.to[2])
+                zoom_expr = (
+                    f"{from_zoom:.4f}+(({to_zoom:.4f}-{from_zoom:.4f})*on/{frame_span})"
+                )
+                from_x = max(0.0, min(0.999, shot.ken_burns.from_[0]))
+                to_x = max(0.0, min(0.999, shot.ken_burns.to[0]))
+                from_y = max(0.0, min(0.999, shot.ken_burns.from_[1]))
+                to_y = max(0.0, min(0.999, shot.ken_burns.to[1]))
+                x_expr = f"iw*({from_x:.4f}+({to_x:.4f}-{from_x:.4f})*on/{frame_span})"
+                y_expr = f"ih*({from_y:.4f}+({to_y:.4f}-{from_y:.4f})*on/{frame_span})"
+                base_filter += (
+                    f",zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':"
+                    f"d={frames}:s={width}x{height}:fps={fps}"
+                )
+
+            video_filters.append(
+                base_filter
+                + f",trim=duration={durations[shot.id]:.3f},setpts=PTS-STARTPTS"
+                + f"[v{idx}]"
             )
 
         # Crossfade chain on video.
@@ -290,6 +451,96 @@ class VideoAssembler:
         video_filters.append(f"{audio_inputs}concat=n={n}:v=0:a=1[aout]")
 
         return ";".join(video_filters)
+
+
+# -------------------------------------------------------------- chapter helpers
+
+
+def _group_by_topic(storyboard: Storyboard) -> list[tuple[str, list[Shot]]]:
+    """Group shots by ``topic_id`` while preserving storyboard order.
+
+    Returns a list of ``(topic_id, shots_in_order)`` tuples. Topics appear
+    in the order their first shot appears, so the chapter sequence matches
+    the original narrative flow.
+    """
+
+    groups: dict[str, list[Shot]] = {}
+    order: list[str] = []
+    for shot in storyboard.shots:
+        if shot.topic_id not in groups:
+            groups[shot.topic_id] = []
+            order.append(shot.topic_id)
+        groups[shot.topic_id].append(shot)
+    return [(topic_id, groups[topic_id]) for topic_id in order]
+
+
+def _subset_storyboard(
+    storyboard: Storyboard,
+    shots: Sequence[Shot],
+    audio_index: AudioIndex,
+) -> Storyboard:
+    shot_ids = {shot.id for shot in shots}
+    measured = {item.shot_id: item.duration_seconds for item in audio_index.items}
+    total = 0.0
+    for shot in shots:
+        total += measured.get(shot.id, shot.duration_seconds_target)
+    return Storyboard(
+        schema_version=storyboard.schema_version,
+        shots=[shot for shot in storyboard.shots if shot.id in shot_ids],
+        total_duration_seconds_target=max(0.0, total),
+    )
+
+
+def _subset_audio(audio_index: AudioIndex, shots: Sequence[Shot]) -> AudioIndex:
+    shot_ids = {shot.id for shot in shots}
+    return AudioIndex(
+        schema_version=audio_index.schema_version,
+        items=[
+            ShotAudioRecord(
+                shot_id=item.shot_id,
+                file=item.file,
+                duration_seconds=item.duration_seconds,
+                sample_rate=item.sample_rate,
+            )
+            for item in audio_index.items
+            if item.shot_id in shot_ids
+        ],
+    )
+
+
+def _subset_mouth(mouth_index: MouthIndex, shots: Sequence[Shot]) -> MouthIndex:
+    shot_ids = {shot.id for shot in shots}
+    return MouthIndex(
+        schema_version=mouth_index.schema_version,
+        items=[
+            MouthShotRecord(
+                shot_id=item.shot_id,
+                file=item.file,
+                duration_seconds=item.duration_seconds,
+                fps=item.fps,
+            )
+            for item in mouth_index.items
+            if item.shot_id in shot_ids
+        ],
+    )
+
+
+def _subset_images(images_index: ImagesIndex, shots: Sequence[Shot]) -> ImagesIndex:
+    shot_ids = {shot.id for shot in shots}
+    return ImagesIndex(
+        schema_version=images_index.schema_version,
+        items=[
+            ShotImageRecord(
+                shot_id=item.shot_id,
+                file=item.file,
+                seed=item.seed,
+                width=item.width,
+                height=item.height,
+            )
+            for item in images_index.items
+            if item.shot_id in shot_ids
+        ],
+    )
 
 
 # -------------------------------------------------------------- default runner

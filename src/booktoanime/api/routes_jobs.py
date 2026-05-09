@@ -12,12 +12,14 @@ from typing import cast
 from fastapi import APIRouter, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import HTMLResponse
 
+from ..pipeline.artifacts import ChaptersIndex
 from ..pipeline.manifest import (
     AspectRatio,
     Depth,
     JobConfig,
     JobManifest,
     LengthPreset,
+    LipSyncConfig,
     NarrationConfig,
     Profile,
     ProvidersConfig,
@@ -25,6 +27,7 @@ from ..pipeline.manifest import (
 from ..state import JobRecord, JobRepository, JobStatus
 from .deps import JobRunner
 from .schemas import (
+    ChapterSummary,
     HealthResponse,
     JobCreatedResponse,
     JobListResponse,
@@ -51,7 +54,8 @@ def build_job_router() -> APIRouter:
     async def job_page(job_id: str, request: Request) -> HTMLResponse:
         record = _require_job(request, job_id)
         manifest = _load_manifest(request, job_id)
-        summary = _summarize(record, manifest=manifest)
+        chapters = _load_chapters(request, job_id)
+        summary = _summarize(record, manifest=manifest, chapters=chapters)
         response = request.app.state.templates.TemplateResponse(
             request, "job.html", {"job": summary}
         )
@@ -77,7 +81,8 @@ def build_job_router() -> APIRouter:
     async def get_job(job_id: str, request: Request) -> JobSummary:
         record = _require_job(request, job_id)
         manifest = _load_manifest(request, job_id)
-        return _summarize(record, manifest=manifest)
+        chapters = _load_chapters(request, job_id)
+        return _summarize(record, manifest=manifest, chapters=chapters)
 
     @router.post(
         "/api/jobs",
@@ -96,6 +101,7 @@ def build_job_router() -> APIRouter:
         minutes_per_topic: float | None = Form(None),
         aspect_ratio: AspectRatio = Form("16:9"),
         profile: Profile = Form("default"),
+        lipsync_enabled: bool = Form(False),
     ) -> JobCreatedResponse:
         if pdf.content_type not in {"application/pdf", "application/octet-stream", None}:
             raise HTTPException(
@@ -107,6 +113,7 @@ def build_job_router() -> APIRouter:
         repo: JobRepository = request.app.state.repo
         data_dir: Path = request.app.state.settings.data_dir
         providers: ProvidersConfig = request.app.state.config_overrides["providers_obj"]
+        default_lipsync_provider = providers.lipsync
 
         job_id = _generate_job_id()
         job_dir = data_dir / "jobs" / job_id
@@ -124,6 +131,10 @@ def build_job_router() -> APIRouter:
             aspect_ratio=aspect_ratio,
             profile=profile,
             providers=providers,
+            lipsync=LipSyncConfig(
+                enabled=lipsync_enabled,
+                provider=default_lipsync_provider,
+            ),
         )
 
         manifest = JobManifest.for_new_job(job_id=job_id, config=config)
@@ -200,7 +211,12 @@ def _load_manifest(request: Request, job_id: str) -> JobManifest | None:
         return None
 
 
-def _summarize(record: JobRecord, *, manifest: JobManifest | None = None) -> JobSummary:
+def _summarize(
+    record: JobRecord,
+    *,
+    manifest: JobManifest | None = None,
+    chapters: list[ChapterSummary] | None = None,
+) -> JobSummary:
     stages: dict[str, str] = {}
     if manifest is not None:
         stages = {name: state.status.value for name, state in manifest.stages.items()}
@@ -213,7 +229,41 @@ def _summarize(record: JobRecord, *, manifest: JobManifest | None = None) -> Job
         source_pdf=record.source_pdf,
         error_message=record.error_message,
         stages=stages,  # type: ignore[arg-type]
+        chapters=chapters or [],
     )
+
+
+def _load_chapters(request: Request, job_id: str) -> list[ChapterSummary]:
+    """Read ``chapters/index.json`` if present and return URL-rooted summaries.
+
+    Returns an empty list when the index is missing (older jobs, or jobs that
+    failed before assembly). A corrupt index is logged and treated as missing
+    rather than failing the whole detail page.
+    """
+
+    data_dir: Path = request.app.state.settings.data_dir
+    index_path = data_dir / "jobs" / job_id / "chapters" / "index.json"
+    if not index_path.is_file():
+        return []
+    try:
+        index = ChaptersIndex.from_path(index_path)
+    except Exception as exc:
+        _logger.warning("failed to load chapters/index.json for %s: %s", job_id, exc)
+        return []
+    summaries: list[ChapterSummary] = []
+    for record in index.items:
+        mp4_name = Path(record.file).name
+        srt_name = Path(record.srt_file).name
+        summaries.append(
+            ChapterSummary(
+                order=record.order,
+                topic_id=record.topic_id,
+                duration_seconds=record.duration_seconds,
+                mp4_url=f"/api/jobs/{job_id}/files/{mp4_name}",
+                srt_url=f"/api/jobs/{job_id}/files/{srt_name}",
+            )
+        )
+    return summaries
 
 
 _ALPHABET = string.ascii_uppercase + string.digits

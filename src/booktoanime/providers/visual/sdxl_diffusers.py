@@ -302,7 +302,7 @@ class SDXLDiffusersProvider(VisualProvider):
         device = self._device or _auto_device(torch)
         dtype = torch.float16 if device != "cpu" else torch.float32
 
-        pipeline = StableDiffusionXLPipeline.from_pretrained(
+        pipeline = StableDiffusionXLPipeline.from_pretrained(  # type: ignore[no-untyped-call]
             self._checkpoint, torch_dtype=dtype
         ).to(device)
 

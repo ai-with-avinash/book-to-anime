@@ -19,6 +19,18 @@ from ..pipeline.manifest import (
 )
 
 
+class ChapterSummary(BaseModel):
+    """One per-topic mp4 + srt that a completed job exposes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    order: int
+    topic_id: str
+    duration_seconds: float
+    mp4_url: str
+    srt_url: str
+
+
 class CreateJobRequest(BaseModel):
     """Form fields posted by the upload UI (multipart, sans the PDF file)."""
 
@@ -64,6 +76,7 @@ class JobSummary(BaseModel):
     source_pdf: str
     error_message: str | None = None
     stages: dict[str, StageStatus] = Field(default_factory=dict)
+    chapters: list[ChapterSummary] = Field(default_factory=list)
 
 
 class JobCreatedResponse(BaseModel):

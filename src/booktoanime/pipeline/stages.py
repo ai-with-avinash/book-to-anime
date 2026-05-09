@@ -19,6 +19,7 @@ class Stage(StrEnum):
     STORYBOARD = "storyboard"
     IMAGES = "images"
     AUDIO = "audio"
+    MOUTH_ANIMATION = "mouth_animation"
     ASSEMBLY = "assembly"
 
 
@@ -28,6 +29,7 @@ STAGE_ORDER: tuple[Stage, ...] = (
     Stage.STORYBOARD,
     Stage.IMAGES,
     Stage.AUDIO,
+    Stage.MOUTH_ANIMATION,
     Stage.ASSEMBLY,
 )
 

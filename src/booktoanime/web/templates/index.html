@@ -81,6 +81,11 @@
       </label>
     </div>
 
+    <label class="checkbox">
+      <input type="checkbox" name="lipsync_enabled" value="true" />
+      Animate narrator's mouth (slower; needs GPU or Replicate API key)
+    </label>
+
     <button type="submit" :disabled="submitting">
       <span x-show="!submitting">Generate</span>
       <span x-show="submitting">Uploading…</span>

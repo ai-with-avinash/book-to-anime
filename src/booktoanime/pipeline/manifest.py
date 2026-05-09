@@ -44,6 +44,23 @@ class ProvidersConfig(BaseModel):
     language: str
     audio: str
     visual: str
+    lipsync: str = "passthrough"
+
+
+class LipSyncConfig(BaseModel):
+    """Per-job lip-sync settings.
+
+    Defaults keep the existing static-image flow: ``enabled=False`` means the
+    mouth-animation stage no-ops and the assembler still consumes per-shot
+    PNGs. When enabled, the pipeline produces one mp4 per shot via the
+    selected provider and the assembler ingests those instead.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    provider: str = "passthrough"
+    preserve_ken_burns: bool = False
 
 
 Depth = Literal["eli5", "undergraduate", "expert"]
@@ -65,6 +82,7 @@ class JobConfig(BaseModel):
     aspect_ratio: AspectRatio = "16:9"
     profile: Profile = "default"
     providers: ProvidersConfig
+    lipsync: LipSyncConfig = Field(default_factory=LipSyncConfig)
 
 
 class JobManifest(BaseModel):

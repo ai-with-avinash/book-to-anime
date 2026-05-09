@@ -123,6 +123,43 @@ visual:
   # illustrious:  { ... }
   # flux_dev:     { accepted_license: false }   # non-commercial
 
+# ---------------------------------------------------------------- LIPSYNC
+
+# Mouth-animation stage. Off by default — when `enabled: false` the pipeline
+# treats the persona PNG as a static narrator (the existing fast path).
+# Turning this on inserts a per-shot lip-sync render between the audio and
+# assembly stages. Heavy: SadTalker locally needs CUDA/MPS + ~1 GB checkpoint
+# downloads on first use; the Replicate adapter sends each shot to a hosted
+# endpoint instead.
+lipsync:
+  enabled: false
+  active: passthrough        # passthrough | sadtalker_local | replicate
+  preserve_ken_burns: false  # set true to keep camera zoom on top of mouth motion
+
+  passthrough:
+    fps: 30                  # no-op stub: writes one mp4 per shot from the static PNG
+                             # (kept in the pipeline so VideoAssembler stays uniform)
+
+  sadtalker_local:
+    # Requires `pip install booktoanime[lipsync]` plus SadTalker's checkpoints.
+    # Set checkpoints_dir if you've pre-downloaded them; otherwise the CLI
+    # downloads on first run.
+    # cli_binary: /opt/homebrew/bin/sadtalker
+    # checkpoints_dir: ~/.local/share/booktoanime/models/sadtalker
+    device: cuda             # cuda | cpu (mps support is partial — fall back to replicate)
+    still_mode: true
+    preprocess: full
+    fps: 25
+
+  replicate:
+    # Hosted SadTalker. Best for Macs / no-GPU machines. ~$0.10 per book.
+    api_key_env: REPLICATE_API_TOKEN
+    model: cjwbw/sadtalker
+    # version: <pin a version hash here for reproducibility>
+    request_timeout_s: 60
+    still_mode: true
+    preprocess: full
+
 # ---------------------------------------------------------------- SERVER
 
 server:

@@ -9,8 +9,11 @@ import pytest
 
 from booktoanime.pipeline.artifacts import (
     AudioIndex,
+    ChaptersIndex,
     ImagesIndex,
     KenBurns,
+    MouthIndex,
+    MouthShotRecord,
     Shot,
     ShotAudioRecord,
     ShotImageRecord,
@@ -339,3 +342,235 @@ async def test_assemble_fails_when_runner_succeeds_but_no_output(tmp_path: Path)
             job_dir=job_dir,
         )
     await bus.close()
+
+
+# --------------------------------------------------------------- chapters
+
+
+def _shot_with_topic(idx: int, topic_id: str, *, duration: float = 4.0) -> Shot:
+    return Shot(
+        id=f"shot_{idx:04d}",
+        topic_id=topic_id,
+        order=idx,
+        narration_text=f"narration {idx}",
+        duration_seconds_target=duration,
+        image_prompt=f"prompt {idx}",
+        seed=idx,
+        ken_burns=KenBurns.model_validate(
+            {"from": [0.0, 0.0, 1.0], "to": [0.05, 0.05, 1.1]}
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_assemble_writes_per_chapter_files_and_index(tmp_path: Path) -> None:
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    images_index, audio_index = _make_dirs(job_dir, 3)
+    storyboard = Storyboard(
+        shots=[
+            _shot_with_topic(1, "topic_001", duration=3.0),
+            _shot_with_topic(2, "topic_001", duration=4.0),
+            _shot_with_topic(3, "topic_002", duration=5.0),
+        ],
+        total_duration_seconds_target=12.0,
+    )
+
+    async def runner(argv: Sequence[str], log_path: Path) -> None:
+        out_path = Path(argv[-1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"\x00\x00\x00 ftypisom" + b"X" * 64)
+
+    bus = ProgressEventBus(job_dir / "events.log")
+    assembler = VideoAssembler(
+        VideoAssemblerConfig(width=128, height=128, fps=24, crf=23, preset="ultrafast"),
+        bus=bus,
+        runner=runner,
+        ffmpeg_binary="ffmpeg-stub",
+    )
+    await assembler.assemble(
+        storyboard=storyboard,
+        audio_index=audio_index,
+        images_index=images_index,
+        job_dir=job_dir,
+    )
+    await bus.close()
+
+    chapters_dir = job_dir / "chapters"
+    assert (chapters_dir / "chapter_001.mp4").is_file()
+    assert (chapters_dir / "chapter_002.mp4").is_file()
+    assert (chapters_dir / "chapter_001.srt").is_file()
+    assert (chapters_dir / "chapter_002.srt").is_file()
+
+    index = ChaptersIndex.from_path(chapters_dir / "index.json")
+    assert [rec.topic_id for rec in index.items] == ["topic_001", "topic_002"]
+    assert [rec.order for rec in index.items] == [1, 2]
+    assert index.items[0].file == "chapters/chapter_001.mp4"
+    assert index.items[0].srt_file == "chapters/chapter_001.srt"
+
+
+@pytest.mark.asyncio
+async def test_assemble_skips_existing_chapter(tmp_path: Path) -> None:
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    images_index, audio_index = _make_dirs(job_dir, 2)
+    storyboard = Storyboard(
+        shots=[
+            _shot_with_topic(1, "topic_001", duration=3.0),
+            _shot_with_topic(2, "topic_002", duration=4.0),
+        ],
+        total_duration_seconds_target=7.0,
+    )
+    chapters_dir = job_dir / "chapters"
+    chapters_dir.mkdir(parents=True)
+    pre = chapters_dir / "chapter_001.mp4"
+    pre.write_bytes(b"already-rendered")
+    pre_mtime = pre.stat().st_mtime
+
+    runner_invocations: list[Path] = []
+
+    async def runner(argv: Sequence[str], log_path: Path) -> None:
+        out_path = Path(argv[-1])
+        runner_invocations.append(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"\x00\x00\x00 ftypisom" + b"X" * 64)
+
+    bus = ProgressEventBus(job_dir / "events.log")
+    assembler = VideoAssembler(
+        VideoAssemblerConfig(width=128, height=128, fps=24, crf=23, preset="ultrafast"),
+        bus=bus,
+        runner=runner,
+        ffmpeg_binary="ffmpeg-stub",
+    )
+    await assembler.assemble(
+        storyboard=storyboard,
+        audio_index=audio_index,
+        images_index=images_index,
+        job_dir=job_dir,
+    )
+    await bus.close()
+
+    assert pre.stat().st_mtime == pre_mtime
+    invoked_names = {p.name for p in runner_invocations}
+    assert "chapter_001.mp4" not in invoked_names
+    assert "chapter_002.mp4" in invoked_names
+    assert "output.mp4" in invoked_names
+
+
+# --------------------------------------------------------------- mouth-mp4 inputs
+
+
+@pytest.mark.asyncio
+async def test_assemble_uses_mouth_mp4_when_present(tmp_path: Path) -> None:
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    images_index, audio_index = _make_dirs(job_dir, 1)
+    mouth_dir = job_dir / "mouth"
+    mouth_dir.mkdir(parents=True)
+    mouth_path = mouth_dir / "shot_0001.mp4"
+    mouth_path.write_bytes(b"\x00\x00\x00 ftypisomFAKEMOUTHMP4")
+    mouth_index = MouthIndex(
+        items=[
+            MouthShotRecord(
+                shot_id="shot_0001",
+                file="mouth/shot_0001.mp4",
+                duration_seconds=4.0,
+                fps=25.0,
+            )
+        ]
+    )
+    storyboard = Storyboard(
+        shots=[_shot_with_topic(1, "topic_001", duration=4.0)],
+        total_duration_seconds_target=4.0,
+    )
+
+    captured_runs: list[list[str]] = []
+
+    async def runner(argv: Sequence[str], log_path: Path) -> None:
+        captured_runs.append(list(argv))
+        Path(argv[-1]).parent.mkdir(parents=True, exist_ok=True)
+        Path(argv[-1]).write_bytes(b"\x00\x00\x00 ftypisom" + b"X" * 64)
+
+    bus = ProgressEventBus(job_dir / "events.log")
+    assembler = VideoAssembler(
+        VideoAssemblerConfig(width=64, height=64, fps=24, crf=23, preset="ultrafast"),
+        bus=bus,
+        runner=runner,
+        ffmpeg_binary="ffmpeg-stub",
+    )
+    await assembler.assemble(
+        storyboard=storyboard,
+        audio_index=audio_index,
+        images_index=images_index,
+        mouth_index=mouth_index,
+        job_dir=job_dir,
+    )
+    await bus.close()
+
+    # First runner invocation is the chapter render. Inspect its argv.
+    chapter_argv = captured_runs[0]
+    # Mouth mp4 must be a direct -i input (no -loop, no -t for that input).
+    assert str(mouth_path) in chapter_argv
+    mouth_idx = chapter_argv.index(str(mouth_path))
+    assert chapter_argv[mouth_idx - 1] == "-i"
+    # Right before -i mouth.mp4 we expect -an, NOT -loop.
+    assert chapter_argv[mouth_idx - 2] == "-an"
+    # Filter graph must drop the zoompan when ken-burns is not preserved.
+    fc = chapter_argv[chapter_argv.index("-filter_complex") + 1]
+    assert "zoompan" not in fc
+    # Pad-fit must still be present so portraits don't get cropped.
+    assert "pad=64:64" in fc
+
+
+@pytest.mark.asyncio
+async def test_assemble_keeps_zoompan_when_preserve_ken_burns(tmp_path: Path) -> None:
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    images_index, audio_index = _make_dirs(job_dir, 1)
+    mouth_dir = job_dir / "mouth"
+    mouth_dir.mkdir(parents=True)
+    mouth_path = mouth_dir / "shot_0001.mp4"
+    mouth_path.write_bytes(b"\x00\x00\x00 ftypisomFAKEMOUTHMP4")
+    mouth_index = MouthIndex(
+        items=[
+            MouthShotRecord(
+                shot_id="shot_0001",
+                file="mouth/shot_0001.mp4",
+                duration_seconds=4.0,
+                fps=25.0,
+            )
+        ]
+    )
+    storyboard = Storyboard(
+        shots=[_shot_with_topic(1, "topic_001", duration=4.0)],
+        total_duration_seconds_target=4.0,
+    )
+
+    captured_runs: list[list[str]] = []
+
+    async def runner(argv: Sequence[str], log_path: Path) -> None:
+        captured_runs.append(list(argv))
+        Path(argv[-1]).parent.mkdir(parents=True, exist_ok=True)
+        Path(argv[-1]).write_bytes(b"\x00\x00\x00 ftypisom" + b"X" * 64)
+
+    bus = ProgressEventBus(job_dir / "events.log")
+    assembler = VideoAssembler(
+        VideoAssemblerConfig(
+            width=64, height=64, fps=24, crf=23, preset="ultrafast", preserve_ken_burns=True
+        ),
+        bus=bus,
+        runner=runner,
+        ffmpeg_binary="ffmpeg-stub",
+    )
+    await assembler.assemble(
+        storyboard=storyboard,
+        audio_index=audio_index,
+        images_index=images_index,
+        mouth_index=mouth_index,
+        job_dir=job_dir,
+    )
+    await bus.close()
+
+    chapter_argv = captured_runs[0]
+    fc = chapter_argv[chapter_argv.index("-filter_complex") + 1]
+    assert "zoompan" in fc
