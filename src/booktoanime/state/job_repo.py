@@ -125,8 +125,11 @@ class JobRepository:
         error_message: str | None = None,
     ) -> None:
         # COALESCE keeps existing current_stage / error_message when callers
-        # update only the status (e.g. RUNNING/COMPLETED transitions). Without
-        # it, a success-path update would null out the last stage marker.
+        # update only the status (e.g. RUNNING transitions). On COMPLETED we
+        # explicitly clear error_message so a successful resume doesn't leave
+        # the prior failure text dangling on the row.
+        clear_error_on_success = status == JobStatus.COMPLETED and error_message is None
+        error_to_write = "" if clear_error_on_success else error_message
         with self._lock, transaction(self._conn):
             self._conn.execute(
                 """
@@ -141,7 +144,7 @@ class JobRepository:
                     status.value,
                     current_stage,
                     _serialize_dt(datetime.now(UTC)),
-                    error_message,
+                    error_to_write,
                     job_id,
                 ),
             )
