@@ -1,0 +1,183 @@
+{% extends "_layout.html" %}
+
+{% block title %}Job {{ job.job_id }}{% endblock %}
+
+{% block content %}
+<section
+  class="card"
+  x-data="jobView()"
+  x-init="connect('/api/jobs/{{ job.job_id }}/events')"
+>
+  <h2>Job <code>{{ job.job_id }}</code></h2>
+
+  <div class="meta">
+    <span class="status" :class="'status-' + status" x-text="status">{{ job.status }}</span>
+    <template x-if="currentStage"><span class="stage" x-text="'stage: ' + currentStage"></span></template>
+    <span class="muted">created {{ job.created_at }}</span>
+  </div>
+
+  <ol class="stages">
+    {% for name in ["parsing","structuring","storyboard","images","audio","mouth_animation","assembly"] %}
+      <li :class="'stage-row stage-' + (stages['{{ name }}'] || 'pending')">
+        <span class="stage-name">{{ name }}</span>
+        <span class="stage-status" x-text="stages['{{ name }}'] || '{{ job.stages.get(name, "pending") }}'"></span>
+      </li>
+    {% endfor %}
+  </ol>
+
+  <div class="progress">
+    <div class="bar" :style="`width: ${(progress * 100).toFixed(1)}%`"></div>
+  </div>
+
+  <h3>Live log</h3>
+  <pre class="log" x-ref="log"></pre>
+
+  <template x-if="errorMessage">
+    <div class="error">
+      <strong>Error:</strong>
+      <span x-text="errorMessage"></span>
+    </div>
+  </template>
+
+  <div class="output" x-show="status === 'completed'" x-cloak>
+    <h3>Output</h3>
+    <video
+      controls
+      preload="metadata"
+      width="100%"
+      :src="`/api/jobs/{{ job.job_id }}/files/output.mp4`"
+    >
+      Your browser doesn't support inline video. Download below.
+    </video>
+    <p class="downloads">
+      <a class="dl" href="/api/jobs/{{ job.job_id }}/files/output.mp4" download>Download MP4</a>
+      &nbsp;|&nbsp;
+      <a class="dl" href="/api/jobs/{{ job.job_id }}/files/output.srt" download>Download SRT</a>
+    </p>
+
+    <details class="chapters" x-show="chapters.length > 0" x-cloak>
+      <summary><strong>Chapters</strong> (<span x-text="chapters.length"></span>)</summary>
+      <ol class="chapter-list">
+        <template x-for="chapter in chapters" :key="chapter.order">
+          <li class="chapter">
+            <h4>
+              <span x-text="`${String(chapter.order).padStart(3, '0')} — ${chapter.topic_id}`"></span>
+              <span class="muted" x-text="`(${formatDuration(chapter.duration_seconds)})`"></span>
+            </h4>
+            <video controls preload="metadata" width="100%" :src="chapter.mp4_url">
+              Your browser doesn't support inline video.
+            </video>
+            <p class="downloads">
+              <a class="dl" :href="chapter.mp4_url" :download="`chapter_${String(chapter.order).padStart(3, '0')}.mp4`">Download MP4</a>
+              &nbsp;|&nbsp;
+              <a class="dl" :href="chapter.srt_url" :download="`chapter_${String(chapter.order).padStart(3, '0')}.srt`">Download SRT</a>
+            </p>
+          </li>
+        </template>
+      </ol>
+    </details>
+  </div>
+
+  <form
+    method="post"
+    action="/api/jobs/{{ job.job_id }}/resume"
+    @submit.prevent="resume()"
+    x-show="status === 'failed' || status === 'cancelled'"
+  >
+    <button type="submit">Resume from last completed stage</button>
+  </form>
+</section>
+
+<script>
+function jobView() {
+  return {
+    status: {{ job.status | tojson }},
+    currentStage: {{ job.current_stage | tojson }},
+    stages: {{ job.stages | tojson }},
+    chapters: {{ (chapters_json | default([])) | tojson }},
+    progress: 0,
+    errorMessage: {{ (job.error_message or '') | tojson }},
+    _source: null,
+
+    connect(url) {
+      try {
+        this._source = new EventSource(url);
+        this._source.addEventListener('stage_started', (e) => this._onStage(e, 'running'));
+        this._source.addEventListener('stage_completed', (e) => this._onStage(e, 'completed'));
+        this._source.addEventListener('stage_failed', (e) => this._onStageFailed(e));
+        this._source.addEventListener('shot_completed', (e) => this._onShot(e, 'completed'));
+        this._source.addEventListener('shot_failed', (e) => this._onShot(e, 'failed'));
+        this._source.addEventListener('info', (e) => this._onInfo(e));
+        this._source.addEventListener('done', () => this._close());
+        this._source.onerror = () => this._close();
+      } catch (err) {
+        this._appendLog('SSE not available: ' + err);
+      }
+    },
+
+    _close() {
+      if (this._source) {
+        this._source.close();
+        this._source = null;
+      }
+      // Refresh status from REST so we see the final state and the chapter list.
+      fetch('/api/jobs/{{ job.job_id }}')
+        .then((r) => r.json())
+        .then((data) => {
+          this.status = data.status;
+          this.currentStage = data.current_stage;
+          this.stages = data.stages || this.stages;
+          this.chapters = data.chapters || this.chapters;
+          this.errorMessage = data.error_message || this.errorMessage;
+        })
+        .catch(() => {});
+    },
+
+    _onStage(event, status) {
+      const data = JSON.parse(event.data);
+      this.stages = { ...this.stages, [data.stage]: status };
+      this.currentStage = data.stage;
+      this._appendLog(`[${data.stage}] ${status}`);
+    },
+
+    _onStageFailed(event) {
+      const data = JSON.parse(event.data);
+      this.stages = { ...this.stages, [data.stage]: 'failed' };
+      this.status = 'failed';
+      this.errorMessage = data.user_message || data.message;
+      this._appendLog(`[${data.stage}] FAILED: ${this.errorMessage}`);
+    },
+
+    _onShot(event, kind) {
+      const data = JSON.parse(event.data);
+      this._appendLog(`[${data.stage}] ${kind} ${data.shot_id}`);
+    },
+
+    _onInfo(event) {
+      const data = JSON.parse(event.data);
+      if (typeof data.progress === 'number') this.progress = data.progress;
+      this._appendLog(`[${data.stage}] ${data.message}`);
+    },
+
+    _appendLog(line) {
+      const el = this.$refs.log;
+      el.textContent += line + '\n';
+      el.scrollTop = el.scrollHeight;
+    },
+
+    formatDuration(seconds) {
+      const total = Math.max(0, Math.round(seconds));
+      const mins = Math.floor(total / 60);
+      const secs = total % 60;
+      return `${mins}:${String(secs).padStart(2, '0')}`;
+    },
+
+    resume() {
+      fetch('/api/jobs/{{ job.job_id }}/resume', { method: 'POST' })
+        .then(() => location.reload())
+        .catch((err) => this._appendLog('resume failed: ' + err));
+    },
+  };
+}
+</script>
+{% endblock %}

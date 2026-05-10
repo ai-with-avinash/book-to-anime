@@ -1,0 +1,68 @@
+BookToAnime
+Copyright 2026 BookToAnime contributors
+
+This product includes software developed at the BookToAnime project
+(https://github.com/ai-with-avinash/book-to-anime).
+
+This product depends on the following third-party software:
+
+  Default runtime (all permissively licensed; bundled with `pip install booktoanime`)
+  -----------------------------------------------------------------------------------
+  * pdfplumber (MIT)               https://github.com/jsvine/pdfplumber
+  * pypdf (BSD-3-Clause)           https://github.com/py-pdf/pypdf
+  * Pillow (HPND, MIT-like)        https://python-pillow.org/
+  * pydantic (MIT)                 https://github.com/pydantic/pydantic
+  * pytesseract (Apache-2.0)       https://github.com/madmaze/pytesseract
+  * platformdirs (MIT)             https://github.com/platformdirs/platformdirs
+  * httpx (BSD-3-Clause)           https://github.com/encode/httpx
+  * tenacity (Apache-2.0)          https://github.com/jd/tenacity
+  * PyYAML (MIT)                   https://pyyaml.org/
+  * soundfile (BSD-3-Clause)       https://github.com/bastibe/python-soundfile
+  * NumPy (BSD-3-Clause)           https://numpy.org/
+  * FastAPI (MIT)                  https://fastapi.tiangolo.com/
+  * Starlette (BSD-3-Clause)       https://www.starlette.io/
+  * uvicorn (BSD-3-Clause)         https://www.uvicorn.org/
+  * sse-starlette (BSD-3-Clause)   https://github.com/sysid/sse-starlette
+  * Jinja2 (BSD-3-Clause)          https://palletsprojects.com/p/jinja/
+  * python-multipart (Apache-2.0)  https://github.com/Kludex/python-multipart
+  * Typer (MIT)                    https://typer.tiangolo.com/
+  * Rich (MIT)                     https://github.com/Textualize/rich
+
+  Optional install extras (Apache-2.0 / MIT / BSD)
+  ------------------------------------------------
+  * openai SDK (Apache-2.0)
+  * anthropic SDK (MIT)
+  * google-genai SDK (Apache-2.0)
+  * groq SDK (Apache-2.0)
+  * together SDK (Apache-2.0)
+  * fireworks-ai SDK (Apache-2.0)
+  * mistralai SDK (Apache-2.0)
+  * Kokoro-82M (Apache-2.0)        https://huggingface.co/hexgrad/Kokoro-82M
+  * diffusers (Apache-2.0)
+  * transformers (Apache-2.0)
+  * accelerate (Apache-2.0)
+  * safetensors (Apache-2.0)
+  * PyTorch (BSD-3-Clause)         https://github.com/pytorch/pytorch
+
+  System binaries (not pip-installed; not redistributed)
+  ------------------------------------------------------
+  * ffmpeg (LGPL build recommended)   https://ffmpeg.org/legal.html
+  * tesseract (Apache-2.0)            https://github.com/tesseract-ocr/tesseract
+
+  Opt-in (NOT bundled; user installs separately and accepts upstream license)
+  ---------------------------------------------------------------------------
+  * XTTS-v2     (Coqui Public Model License — non-commercial)
+  * FLUX.1 dev  (FLUX.1 dev Non-Commercial License)
+  * Animagine XL / Illustrious (per-checkpoint license — verify before use)
+
+The frontend uses, via CDN:
+  * htmx        (BSD-2-Clause)        https://htmx.org/
+  * Alpine.js   (MIT)                 https://alpinejs.dev/
+
+PyMuPDF (AGPL-3.0) is intentionally NOT a dependency. The project will not
+accept changes that introduce AGPL or other copyleft runtime dependencies.
+
+Trademark notice: Anthropic, OpenAI, Google, Groq, Together, Fireworks,
+Mistral, DeepSeek, Hugging Face, NVIDIA, Coqui, Black Forest Labs, and any
+referenced model names are trademarks of their respective owners. This
+project is not affiliated with or endorsed by any of them.
