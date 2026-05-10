@@ -125,6 +125,27 @@ reconcile their `index.json` against on-disk files so deleted files force
 a re-render and orphan files (written by a crash before the index was
 flushed) get adopted.
 
+### Topic segmentation
+
+The structuring stage detects chapters via heading patterns (`Chapter N`,
+`Section N`, numbered subsections, ALL-CAPS short lines) found in the
+first lines of each page. To guard against false-positive headings (numbered
+list items, figure labels), spans whose page range carries fewer than
+**150 words** of body text are merged forward into the previous chapter.
+The final chapter is always extended to end-of-document so no pages are
+dropped. Threshold lives in `topic_segmenter.py:_MIN_SPAN_WORDS`.
+
+Per-chapter narration target (`summarizer.py:_target_seconds_per_topic`):
+`max(20s, midpoint / N)` where midpoint depends on the length preset:
+
+| preset | midpoint | typical avg/chapter (N=5–10) |
+|--------|----------|------------------------------|
+| short    | 7.5 min |  ~45–90 s  |
+| standard | 20 min  |  ~2–3 min  |
+| in_depth | 50 min  |  ~3 min (capped by `max_tokens_per_topic=700`) |
+
+Override via `SummarizationConfig.minutes_per_topic` for a fixed target.
+
 ---
 
 ## Profiles

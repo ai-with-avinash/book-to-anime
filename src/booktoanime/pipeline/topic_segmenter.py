@@ -34,6 +34,7 @@ _HEADING_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 _MAX_TITLE_LEN = 120
 _MIN_TITLE_LEN = 4
+_MIN_SPAN_WORDS = 150
 
 
 @dataclass(frozen=True)
@@ -60,22 +61,86 @@ class TopicSegmenter:
         if not headings:
             return self._whole_book_as_topic(document)
 
-        spans: list[TopicSpan] = []
+        raw_spans: list[TopicSpan] = []
         for idx, heading in enumerate(headings):
             page_end = (
                 headings[idx + 1].page_index - 1
                 if idx + 1 < len(headings)
                 else len(document.pages) - 1
             )
-            spans.append(
+            raw_spans.append(
                 TopicSpan(
-                    id=f"topic_{idx + 1:03d}",
+                    id="",
                     title=heading.title,
                     page_start=heading.page_index,
                     page_end_inclusive=max(page_end, heading.page_index),
                 )
             )
-        return spans
+
+        merged = self._merge_sparse_spans(raw_spans, document.pages)
+        if not merged:
+            return self._whole_book_as_topic(document)
+        return [
+            TopicSpan(
+                id=f"topic_{i + 1:03d}",
+                title=span.title,
+                page_start=span.page_start,
+                page_end_inclusive=span.page_end_inclusive,
+            )
+            for i, span in enumerate(merged)
+        ]
+
+    def _merge_sparse_spans(
+        self,
+        spans: Sequence[TopicSpan],
+        pages: Sequence[ParsedPage],
+    ) -> list[TopicSpan]:
+        # Drop spurious heading-detected spans whose page range carries too
+        # little body text. Merge them forward into the previous real span so
+        # their pages aren't lost. If the very first span is sparse, fold it
+        # into the next one instead.
+        if not spans:
+            return []
+
+        kept: list[TopicSpan] = []
+        for span in spans:
+            words = self._span_word_count(span, pages)
+            if words >= _MIN_SPAN_WORDS:
+                kept.append(span)
+                continue
+            if kept:
+                prev = kept[-1]
+                kept[-1] = TopicSpan(
+                    id="",
+                    title=prev.title,
+                    page_start=prev.page_start,
+                    page_end_inclusive=max(prev.page_end_inclusive, span.page_end_inclusive),
+                )
+            else:
+                # First span is sparse; extend its title-bearing start but keep
+                # this span as the seed so we can absorb later content into it.
+                kept.append(span)
+
+        # Ensure all pages remain covered (final span runs to end-of-doc).
+        if kept and pages:
+            last = kept[-1]
+            doc_last = len(pages) - 1
+            if last.page_end_inclusive < doc_last:
+                kept[-1] = TopicSpan(
+                    id="",
+                    title=last.title,
+                    page_start=last.page_start,
+                    page_end_inclusive=doc_last,
+                )
+        return kept
+
+    @staticmethod
+    def _span_word_count(span: TopicSpan, pages: Sequence[ParsedPage]) -> int:
+        total = 0
+        for idx in range(span.page_start, span.page_end_inclusive + 1):
+            if 0 <= idx < len(pages):
+                total += len(pages[idx].text.split())
+        return total
 
     # -------------------------------------------------------------- helpers
 
