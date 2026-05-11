@@ -191,7 +191,15 @@ def test_full_run_completes_via_api(
         pytest.fail("job never completed")
 
     assert status_body["status"] == "completed", status_body
-    for stage in ("parsing", "structuring", "storyboard", "images", "audio", "assembly"):
+    for stage in (
+        "parsing",
+        "structuring",
+        "style_seeding",
+        "storyboard",
+        "images",
+        "audio",
+        "assembly",
+    ):
         assert status_body["stages"][stage] == "completed", stage
 
     job_dir = data_dir / "jobs" / job_id
@@ -202,8 +210,11 @@ def test_full_run_completes_via_api(
     # Assembly artifacts.
     assert (job_dir / "output.mp4").is_file()
     assert (job_dir / "output.srt").is_file()
-    # Phase 1 stubs out PERSONA_SEEDING; phase 2 reintroduces a job-local
-    # style anchor under <job>/style/.
+    # Style seeding writes a single per-job anchor used by IP-Adapter on
+    # SDXL fallback shots.
+    style_dir = job_dir / "style"
+    assert style_dir.is_dir()
+    assert any(p.suffix == ".png" for p in style_dir.iterdir())
 
 
 def test_unknown_job_returns_404(app_client: tuple[TestClient, Path]) -> None:

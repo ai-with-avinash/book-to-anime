@@ -11,6 +11,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..errors import ManifestSchemaMismatch
+from .artifacts import JobArtifacts
 from .stages import STAGE_ORDER, Stage
 
 # Bump this whenever a non-backwards-compatible change ships in the job
@@ -95,6 +96,7 @@ class JobManifest(BaseModel):
     )
     config: JobConfig
     stages: dict[str, StageState] = Field(default_factory=dict)
+    artifacts: JobArtifacts = Field(default_factory=JobArtifacts)
 
     # ------------------------------------------------------------- factories
 

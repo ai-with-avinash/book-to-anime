@@ -143,8 +143,10 @@ class TopicSummarizer:
         depth_instruction = _DEPTH_INSTRUCTIONS[self._config.depth]
         word_target = max(40, int(target_seconds * 165 / 60))
         system_prompt = (
-            "You are condensing one chapter of a book for a narrated explainer "
-            "video. " + depth_instruction
+            "You are condensing one chapter of a document for a narrated "
+            "explainer video. Use concrete examples and clear definitions. "
+            "Match the source's domain — don't force STEM framing on non-"
+            "technical content. " + depth_instruction
         )
         user_prompt = (
             f"Topic title: {title}\n"

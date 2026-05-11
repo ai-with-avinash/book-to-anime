@@ -32,46 +32,33 @@ from typing import Any, Protocol, runtime_checkable
 from PIL import Image
 
 from ...errors import ProviderError
+from ...pipeline.styles import STYLE_ANCHOR_BASE, STYLE_FRAGMENTS
 from ..base import GeneratedImage, ImageGenRequest, VisualProvider
 from ..registry import register_visual_provider
+
+# Module-private aliases preserve the legacy reference names used throughout
+# this file without exposing them as part of the public ``styles`` module API.
+_STYLE_FRAGMENTS = STYLE_FRAGMENTS
+_STYLE_ANCHOR_BASE = STYLE_ANCHOR_BASE
 
 _logger = logging.getLogger(__name__)
 
 # SDXL pipelines require dimensions divisible by 8.
 _DIM_MULTIPLE = 8
 
-# Panel-style prompt fragments. The user picks a style name in config; the
-# storyboard prompt is concatenated with the matching fragment so every shot
-# carries the same baseline aesthetic. Phase 1 keeps the original anime
-# fragments in place — phase 2 replaces them with STEM motion-comic fragments.
-_STYLE_FRAGMENTS: Mapping[str, str] = {
-    "shounen-bright": (
-        "shounen anime, bright saturated colors, clean line art, dynamic composition, "
-        "studio anime production, high detail"
-    ),
-    "shoujo-soft": (
-        "shoujo anime, soft pastel palette, sparkly highlights, gentle expressions, "
-        "watercolor-like backgrounds"
-    ),
-    "seinen-muted": (
-        "seinen anime, muted earthy palette, cinematic lighting, mature realistic "
-        "proportions, painterly textures"
-    ),
-    "chibi": (
-        "chibi anime, oversized heads, small bodies, cute exaggerated expressions, "
-        "playful flat shading"
-    ),
-}
+# Panel-style prompt fragments live in :mod:`pipeline.styles` so the storyboard
+# builder + style seeder + this provider all agree on the same mapping. We
+# import as ``_STYLE_FRAGMENTS`` to preserve the module-private reference name
+# the rest of this file uses.
 
 _NEGATIVE_PROMPT_BASELINE = (
     "low quality, blurry, distorted, watermark, text, signature, deformed hands, "
     "bad anatomy, jpeg artifacts"
 )
 
-_STYLE_REFERENCE_BASE_PROMPT = (
-    "style reference, single subject centered, neutral background, "
-    "balanced composition"
-)
+# ``_STYLE_ANCHOR_BASE`` is imported from :mod:`pipeline.styles` above; the
+# legacy :meth:`SDXLDiffusersProvider.prepare` keeps it for the standalone
+# style-anchor render path (``StyleSeeder`` calls :meth:`render` directly).
 
 
 @dataclass(frozen=True)
@@ -190,7 +177,7 @@ class SDXLDiffusersProvider(VisualProvider):
             )
             style_fragment = panel_style
 
-        prompt = f"{_STYLE_REFERENCE_BASE_PROMPT}, {style_fragment}"
+        prompt = f"{_STYLE_ANCHOR_BASE}, {style_fragment}"
         request = ImageGenRequest(
             prompt=prompt,
             negative_prompt=_NEGATIVE_PROMPT_BASELINE,

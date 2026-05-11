@@ -40,10 +40,16 @@ from .image_renderer import ImageRendererConfig, ShotImageRenderer
 from .manifest import JobManifest
 from .stages import STAGE_ORDER, Stage
 from .storyboard import StoryboardBuilder, StoryboardConfig
+from .style_seeder import StyleSeeder, StyleSeederConfig
 from .summarizer import SummarizationConfig, TopicSummarizer
 from .topic_segmenter import TopicSegmenter
 from .tts_narrator import TTSNarrator, TTSNarratorConfig
 from .video_assembler import FFmpegRunner, VideoAssembler, VideoAssemblerConfig
+
+# Default style-anchor seed used when JobConfig doesn't supply one. Matches the
+# legacy narrator-seed constant so existing free-stack jobs hit the same SDXL
+# cache key across the phase-1 → phase-2 transition.
+_DEFAULT_STYLE_SEED = 42
 
 _logger = logging.getLogger(__name__)
 
@@ -149,8 +155,8 @@ class PipelineOrchestrator:
             await self._run_parsing(job_dir=job_dir)
         elif stage == Stage.STRUCTURING:
             await self._run_structuring(manifest=manifest, job_dir=job_dir)
-        elif stage == Stage.PERSONA_SEEDING:
-            await self._run_persona_seeding(manifest=manifest, job_dir=job_dir)
+        elif stage == Stage.STYLE_SEEDING:
+            await self._run_style_seeding(manifest=manifest, job_dir=job_dir)
         elif stage == Stage.STORYBOARD:
             await self._run_storyboard(manifest=manifest, job_dir=job_dir)
         elif stage == Stage.IMAGES:
@@ -202,29 +208,51 @@ class PipelineOrchestrator:
             job_dir / "structured.json",
         )
 
-    async def _run_persona_seeding(
+    async def _run_style_seeding(
         self,
         *,
         manifest: JobManifest,
         job_dir: Path,
     ) -> None:
-        """Phase-1 stub for the persona-seeding stage.
+        """Render (or load) the per-job style-anchor reference image.
 
-        The original anime-narrator persona was removed when the project
-        pivoted away from character-driven explainers. Phase 2 replaces this
-        stub with ``STYLE_SEEDING`` — a one-time style-anchor render used by
-        IP-Adapter on SDXL fallback shots.
+        The :class:`StyleSeeder` is idempotent on disk and the orchestrator is
+        idempotent on the manifest: if both the manifest already records a
+        :class:`StyleReference` *and* the referenced file exists, we skip the
+        provider call entirely. This guards against re-running an already-
+        completed stage when ``manifest.json`` is replayed during resume.
         """
 
-        del manifest, job_dir  # phase-1 stub doesn't need either
+        existing = manifest.artifacts.style_reference
+        if existing is not None and (job_dir / existing.file).is_file():
+            await self._deps.bus.emit(
+                ProgressEvent(
+                    kind=ProgressKind.INFO,
+                    stage=Stage.STYLE_SEEDING.value,
+                    message=(
+                        f"style anchor already present at {existing.file}; "
+                        "skipping render"
+                    ),
+                )
+            )
+            return
+
+        seeder = StyleSeeder(
+            StyleSeederConfig(
+                panel_style=manifest.config.panel_style,
+                seed=_DEFAULT_STYLE_SEED,
+            ),
+            visual_provider=self._deps.visual,
+        )
+        reference = await seeder.seed(job_dir)
+        manifest.artifacts = manifest.artifacts.model_copy(
+            update={"style_reference": reference}
+        )
         await self._deps.bus.emit(
             ProgressEvent(
                 kind=ProgressKind.INFO,
-                stage=Stage.PERSONA_SEEDING.value,
-                message=(
-                    "persona seeding stubbed; replaced in phase 2 with style "
-                    "seeding"
-                ),
+                stage=Stage.STYLE_SEEDING.value,
+                message=f"style anchor written to {reference.file}",
             )
         )
 

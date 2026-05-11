@@ -12,6 +12,7 @@ Path safety:
 from __future__ import annotations
 
 from collections.abc import Sequence
+from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Annotated
 
@@ -65,6 +66,20 @@ class StructuredDocument(BaseModel):
 # --------------------------------------------------------------- storyboard.json
 
 
+class VisualKind(StrEnum):
+    """How a shot should be visualised.
+
+    The renderer dispatch logic (phase 3) reads this to decide whether to
+    composite a real extracted PDF figure, lay out a title card, or fall back
+    to SDXL illustration. Phase 2 plumbs the field end-to-end but the renderer
+    still calls SDXL for every kind.
+    """
+
+    FIGURE = "figure"
+    ILLUSTRATION = "illustration"
+    TITLE_CARD = "title_card"
+
+
 class KenBurns(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -95,6 +110,15 @@ class Shot(BaseModel):
     crossfade_in_ms: int = Field(default=400, ge=0)
     crossfade_out_ms: int = Field(default=400, ge=0)
     explains_image_id: str | None = None
+    visual_kind: VisualKind = VisualKind.ILLUSTRATION
+    figure_id: str | None = Field(
+        default=None,
+        description=(
+            "Stable ``ExtractedImage.image_id`` reference when "
+            "``visual_kind == FIGURE``. Phase 3 renderer uses this to look up "
+            "the real PDF figure; ``None`` for ILLUSTRATION / TITLE_CARD."
+        ),
+    )
 
 
 class Storyboard(BaseModel):
@@ -124,6 +148,11 @@ class ShotImageRecord(BaseModel):
     seed: int
     width: int
     height: int
+    # Phase 2: store the storyboard's visual_kind/figure_id alongside the
+    # rendered file so resume reconciliation (phase 3 dispatch) can detect
+    # stale records when the storyboard re-computes a different kind.
+    visual_kind: VisualKind = VisualKind.ILLUSTRATION
+    figure_id: str | None = None
 
 
 class ImagesIndex(BaseModel):
@@ -188,6 +217,37 @@ class ChaptersIndex(BaseModel):
     @classmethod
     def from_path(cls, path: Path) -> ChaptersIndex:
         return cls.model_validate_json(path.read_bytes())
+
+
+# --------------------------------------------------------------- manifest artifacts pointer
+
+
+class StyleReference(BaseModel):
+    """On-disk record of the style-anchor image produced by ``STYLE_SEEDING``.
+
+    Defined here (not in :mod:`pipeline.style_seeder`) so :class:`JobArtifacts`
+    can embed it without an import cycle — the seeder module itself imports
+    from this one. ``StyleSeeder`` re-exports the type for ergonomic imports.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    file: JobRelPath
+    panel_style: str
+    seed: int
+
+
+class JobArtifacts(BaseModel):
+    """Pointers to per-job artifacts produced by stages that don't emit their
+    own ``index.json`` (e.g. STYLE_SEEDING).
+
+    Lives inside :class:`JobManifest`. Pure data; no IO. Phase 3+ may add more
+    fields as new artifact-producing stages land.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    style_reference: StyleReference | None = None
 
 
 # --------------------------------------------------------------- helpers exported for stage code

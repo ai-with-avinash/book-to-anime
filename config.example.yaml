@@ -20,7 +20,12 @@ data_dir: ~/.local/share/booktoanime
 profile: default
 
 defaults:
-  panel_style: clean-linework             # phase-2 ships real STEM panel styles
+  # panel_style choices:
+  #   clean-linework          — minimal-palette line art, technical-diagram look
+  #   chalkboard-sketch       — white chalk on dark green, classroom aesthetic
+  #   watercolor-technical    — muted earth palette, hand-painted scientific drawing
+  #   flat-vector-infographic — bold geometric shapes, modern infographic style
+  panel_style: clean-linework
   depth: undergraduate                    # eli5 | undergraduate | expert
   length_preset: standard                 # short | standard | in_depth
   aspect_ratio: "16:9"                    # 16:9 | 9:16 | 1:1

@@ -35,7 +35,22 @@ LLM costs vary with PDF length, depth setting, and shot count.
 
 See [`docs/costs.md`](docs/costs.md) for a fuller breakdown.
 
-<!-- panel-style section: filled in phase 2 -->
+### Panel styles
+
+Each job renders SDXL fallback shots in one of four panel styles. The
+style fragment is also baked into a per-job IP-Adapter anchor (the
+`STYLE_SEEDING` stage) so every illustration in the same job hews to a
+single visual tone.
+
+| Key | Look |
+|---|---|
+| `clean-linework` | Minimal-palette line art with a technical-diagram aesthetic. Default; the most neutral choice for STEM content. |
+| `chalkboard-sketch` | White chalk on a dark green chalkboard. Hand-drawn classroom vibe. |
+| `watercolor-technical` | Muted earth palette over a light pencil outline — hand-painted scientific illustration. |
+| `flat-vector-infographic` | Bold geometric shapes, four-color limited palette, modern educational infographic. |
+
+Real PDF figures (the `FIGURE` shot kind) bypass SDXL entirely and are
+composited as comic panels in phase 3.
 
 ---
 

@@ -107,3 +107,44 @@ consumers; the binary rename to `studypanels` is queued for v0.2.
   the static `images/shot_*.png` inputs. **The xfade math is unchanged
   in this release; phase 4 fixes the AUDIT.md HIGH bugs.**
 - Test `tests/unit/test_mouth_animator.py`.
+
+### Phase 2 — Visual rewrite (Unreleased)
+
+- **`Stage.PERSONA_SEEDING` renamed to `Stage.STYLE_SEEDING`.** The stage
+  is no longer a stub: a new `pipeline/style_seeder.py` module produces a
+  single per-job IP-Adapter style anchor (no character) keyed on
+  `(panel_style, seed)` and writes it to `<job_dir>/style/`.
+- **`pipeline/styles.py` (NEW)** exports `STYLE_FRAGMENTS` — the canonical
+  panel-style → prompt-fragment mapping consumed by the storyboard
+  builder, the SDXL provider, and the style seeder. Four real styles
+  ship: `clean-linework`, `chalkboard-sketch`, `watercolor-technical`,
+  `flat-vector-infographic`.
+- **`VisualKind` enum (NEW)** in `pipeline/artifacts.py` — `FIGURE`,
+  `ILLUSTRATION`, `TITLE_CARD`. `Shot` gains `visual_kind` and
+  `figure_id` (stable `ExtractedImage.image_id` reference, not a list
+  index). Phase 2 plumbs the labels end-to-end; phase 3 wires the
+  renderer dispatch.
+- **`pipeline/storyboard.py`** rewritten prompt template:
+  `"educational illustration of {topic_title}: {focus}, {style_fragment}"`
+  (no `anime explainer scene` literal). New `_sentence_clean` helper.
+  Storyboard now assigns `visual_kind`: first shot of a topic with three
+  or more shots becomes `TITLE_CARD`; unconsumed `image_refs` become
+  `FIGURE` (one per shot); remainder fall through to `ILLUSTRATION`.
+- **`pipeline/summarizer.py`** system prompt neutralised. Drops the
+  book-only framing and tells the model to match the source's domain
+  instead of forcing STEM phrasing on every document.
+- **`pipeline/image_renderer.py`** records `visual_kind` and `figure_id`
+  in `images/index.json`. Reconciler invalidates an on-disk shot whose
+  recorded kind or figure_id no longer matches the storyboard so resume
+  re-renders stale panels rather than reusing them.
+- **`JobArtifacts.style_reference`** (NEW pointer field) — the
+  manifest now persists the seeder's `StyleReference` so resume can
+  short-circuit re-rendering the anchor.
+- **UI dropdown** in `web/templates/index.html` lists all four panel
+  styles. `README.md` panel-style placeholder replaced with a real
+  section. `config.example.yaml` comment lists the four choices.
+- **Note:** v0.1.0 is still WIP. Jobs created on a phase-1 build cannot
+  be resumed by a phase-2 build because their manifests don't carry the
+  new `artifacts.style_reference` field and their storyboards lack the
+  `visual_kind` / `figure_id` columns. Back up or delete
+  `<data_dir>/jobs/` after pulling phase 2.

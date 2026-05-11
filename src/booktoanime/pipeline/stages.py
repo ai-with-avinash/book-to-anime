@@ -16,7 +16,7 @@ class Stage(StrEnum):
 
     PARSING = "parsing"
     STRUCTURING = "structuring"
-    PERSONA_SEEDING = "persona_seeding"
+    STYLE_SEEDING = "style_seeding"
     STORYBOARD = "storyboard"
     IMAGES = "images"
     AUDIO = "audio"
@@ -26,7 +26,7 @@ class Stage(StrEnum):
 STAGE_ORDER: tuple[Stage, ...] = (
     Stage.PARSING,
     Stage.STRUCTURING,
-    Stage.PERSONA_SEEDING,
+    Stage.STYLE_SEEDING,
     Stage.STORYBOARD,
     Stage.IMAGES,
     Stage.AUDIO,

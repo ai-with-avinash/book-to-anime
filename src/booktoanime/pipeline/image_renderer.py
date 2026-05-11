@@ -174,6 +174,8 @@ class ShotImageRenderer:
             seed=generated.seed,
             width=generated.width,
             height=generated.height,
+            visual_kind=shot.visual_kind,
+            figure_id=shot.figure_id,
         )
 
     async def _emit_progress_ratio(self, done: int, total: int) -> None:
@@ -212,16 +214,36 @@ def _reconcile_existing_index(
             loaded = []
 
     by_id = {record.shot_id: record for record in loaded}
-    storyboard_ids = {shot.id for shot in storyboard.shots}
+    shots_by_id = {shot.id: shot for shot in storyboard.shots}
 
-    # Drop records whose file no longer exists.
+    # Drop records whose file no longer exists OR whose visual_kind / figure_id
+    # no longer match the storyboard (phase 3 dispatch reads visual_kind, so a
+    # stale value would render the wrong panel kind on resume).
     survived: list[ShotImageRecord] = []
     for record in loaded:
-        if record.shot_id not in storyboard_ids:
+        shot = shots_by_id.get(record.shot_id)
+        if shot is None:
             continue
         full_path = images_dir.parent / record.file
-        if full_path.is_file():
-            survived.append(record)
+        if not full_path.is_file():
+            continue
+        if record.visual_kind != shot.visual_kind:
+            _logger.info(
+                "invalidating shot %s: visual_kind changed %s -> %s",
+                record.shot_id,
+                record.visual_kind,
+                shot.visual_kind,
+            )
+            continue
+        if record.figure_id != shot.figure_id:
+            _logger.info(
+                "invalidating shot %s: figure_id changed %r -> %r",
+                record.shot_id,
+                record.figure_id,
+                shot.figure_id,
+            )
+            continue
+        survived.append(record)
 
     # Adopt files-on-disk that the storyboard knows about but the index doesn't.
     survived_ids = {record.shot_id for record in survived}
@@ -237,6 +259,8 @@ def _reconcile_existing_index(
                     seed=shot.seed,
                     width=0,
                     height=0,
+                    visual_kind=shot.visual_kind,
+                    figure_id=shot.figure_id,
                 )
             )
     return survived
