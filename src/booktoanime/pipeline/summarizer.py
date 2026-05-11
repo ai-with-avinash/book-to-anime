@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -12,6 +13,45 @@ from ..parsing.models import ParsedDocument
 from ..providers import ChatMessage, CompletionRequest, LanguageProvider
 from .artifacts import TopicSection
 from .topic_segmenter import TopicSpan
+
+# Some reasoning models (qwen3, deepseek-r1) wrap their answer in
+# <think>...</think> blocks before the JSON. Strip them before parsing.
+_THINK_BLOCK = re.compile(r"<think\b[^>]*>.*?</think>", re.DOTALL | re.IGNORECASE)
+# Fallback: find first balanced JSON object in the cleaned response.
+_FIRST_JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
+
+
+def _extract_json_payload(response: str) -> str:
+    """Best-effort recover a JSON object from a chat response.
+
+    Order of attempts:
+      1. raw response (fast path for compliant models)
+      2. response with ``<think>...</think>`` blocks stripped
+      3. first ``{...}`` substring of the cleaned response
+    """
+    candidates: list[str] = [response]
+    stripped = _THINK_BLOCK.sub("", response).strip()
+    if stripped != response.strip():
+        candidates.append(stripped)
+    match = _FIRST_JSON_OBJECT.search(stripped or response)
+    if match is not None:
+        candidates.append(match.group(0))
+    last_exc: json.JSONDecodeError | None = None
+    for candidate in candidates:
+        candidate = candidate.strip()
+        if not candidate:
+            continue
+        try:
+            json.loads(candidate)
+            return candidate
+        except json.JSONDecodeError as exc:
+            last_exc = exc
+            continue
+    raise json.JSONDecodeError(
+        last_exc.msg if last_exc else "no JSON object found in response",
+        response,
+        last_exc.pos if last_exc else 0,
+    )
 
 Depth = Literal["eli5", "undergraduate", "expert"]
 LengthPreset = Literal["short", "standard", "in_depth"]
@@ -171,7 +211,7 @@ class TopicSummarizer:
         )
 
         try:
-            payload = json.loads(response)
+            payload = json.loads(_extract_json_payload(response))
         except json.JSONDecodeError as exc:
             raise ProviderError(
                 f"summarizer response was not JSON: {response[:200]}"
