@@ -171,6 +171,14 @@ class SDXLDiffusersProvider(VisualProvider):
         # requires `image_embeds`.
         self._ip_adapter_loaded = False
         self._ip_adapter_lock = asyncio.Lock()
+        # Serialize pipeline inference calls. Diffusers internally uses the
+        # HuggingFace fast tokenizer (Rust ``tokenizers``), which is not
+        # thread-safe across concurrent borrows. Even with split semaphores
+        # in the renderer, two SDXL shots running in parallel can hit the
+        # same tokenizer state and raise ``RuntimeError: Already borrowed``.
+        # GPU inference doesn't benefit from parallelism on a single device
+        # anyway — serializing is correct, not a regression.
+        self._render_call_lock = asyncio.Lock()
 
     # ------------------------------------------------------ VisualProvider API
 
@@ -253,7 +261,8 @@ class SDXLDiffusersProvider(VisualProvider):
         )
 
         try:
-            image = await asyncio.to_thread(_invoke_pipeline, pipeline, call_args)
+            async with self._render_call_lock:
+                image = await asyncio.to_thread(_invoke_pipeline, pipeline, call_args)
         except Exception as exc:
             raise ProviderError(f"SDXL render failed: {exc}") from exc
 
