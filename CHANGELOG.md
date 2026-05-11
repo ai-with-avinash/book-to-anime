@@ -200,3 +200,58 @@ consumers; the binary rename to `studypanels` is queued for v0.2.
   `web/static/fonts/` subtree under `packages = ["src/booktoanime"]`;
   no force-include block needed. The wheel build is verified to bundle
   `Inter-{Regular,Bold}.ttf` via `unzip -l`.
+
+### Phase 4 — Polish + AUDIT bug fixes (Unreleased)
+
+- **Fix `video_assembler.py` n=1 single-shot filtergraph** (AUDIT HIGH 1).
+  The previous `concat=n=1:v=0:a=1` audio filter was invalid for a single
+  input; ffmpeg's `concat` filter requires at least two segments. The
+  assembler now special-cases `n == 1` with `[0:v]copy[vout]` for video
+  and `[1:a]anull[aout]` for audio, so the first ever real run of a
+  single-topic job no longer fails to encode.
+- **Fix `video_assembler.py` xfade offset math** (AUDIT HIGH 3). The
+  previous accumulator added raw input durations and subtracted per-pair
+  fades, which under-counted by the cumulative fade overlap for any
+  non-uniform fade configuration past shot 3. The assembler now tracks
+  `rendered_so_far` — the running length of the already-faded output —
+  separately from raw cumulative input duration. The xfade offset for
+  shot k is computed as `rendered_so_far - fade_k`, then
+  `rendered_so_far = offset + durations[k]`. A unit test asserts the
+  closed-form values for 3 shots with non-uniform fades.
+- **Stream ffmpeg stderr directly to disk** (AUDIT MEDIUM). The default
+  runner now binds ffmpeg's `stderr` fd to the opened log file via
+  `asyncio.create_subprocess_exec(..., stderr=log_handle)` instead of
+  buffering through `process.communicate()`. Long encodes can produce
+  hundreds of MB of verbose ffmpeg chatter; the previous path could OOM
+  the orchestrator on a real book-length run.
+- **Dropped dead `offsets` block** in the filtergraph builder (AUDIT
+  MEDIUM). The local `offsets = [0.0]` accumulator was computed but
+  never used — the actual xfade timing always ran off the `cumulative`
+  / `rendered_so_far` variable.
+- **Fix `routes_sse.py` disconnect race** (AUDIT HIGH 5). The SSE
+  event-stream loop now races `queue.get()` against
+  `request.is_disconnected()` via `asyncio.wait(FIRST_COMPLETED)`
+  wrapping both in explicit `create_task` calls. Any orphan task is
+  cancelled on every iteration, and a `CancelledError` propagated into
+  the wait will cancel both children before re-raising so no
+  ``Task was destroyed but it is pending!`` warnings escape on
+  generator teardown. The pre-existing `async with bus.subscribe()`
+  finally block continues to free the subscriber slot on exit.
+- **New `tests/unit/test_routes_sse.py`** — three coroutine-level
+  assertions covering: disconnect-mid-stream-with-idle-queue terminates
+  cleanly, no leaked asyncio tasks across stream entry/exit, and the
+  bus-close sentinel emits a final `done` event before the generator
+  returns.
+- **New `tests/integration/test_real_ffmpeg.py`** — exercises the real
+  ffmpeg binary against synthesized black-frame PNGs and silent WAVs for
+  `n = 1`, `n = 3`, and `n = 10` shots. ffprobe extracts the output
+  duration and asserts it matches the closed-form
+  `sum(durations) - (n-1) * fade_seconds` value within 200 ms. The
+  module fails (not skips) when ffmpeg is absent so CI cannot silently
+  pass on a misconfigured runner.
+- **New `real_ffmpeg` pytest marker** registered in
+  `[tool.pytest.ini_options].markers` so the integration tests can be
+  invoked with `pytest -m real_ffmpeg` and skipped from the default
+  unit-test sweep with `-m "not real_ffmpeg"`.
+- **v0.1.0 release candidate.** All AUDIT.md HIGH-severity bugs in the
+  pivot scope are now closed; tag pending the phase 4 human checkpoint.

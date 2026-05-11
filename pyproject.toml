@@ -93,6 +93,7 @@ addopts = "-ra --strict-markers"
 markers = [
   "slow: marks tests as slow",
   "needs_tesseract: requires Tesseract OCR binary on PATH",
+  "real_ffmpeg: integration tests that require a real ffmpeg binary",
 ]
 
 [tool.ruff]

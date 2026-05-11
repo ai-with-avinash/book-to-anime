@@ -503,24 +503,32 @@ def _subset_images(images_index: ImagesIndex, shots: Sequence[Shot]) -> ImagesIn
 
 
 async def _default_runner(argv: Sequence[str], log_path: Path) -> None:
-    """Run ffmpeg via subprocess, capture stderr to ``log_path``."""
+    """Run ffmpeg via subprocess, streaming stderr directly to ``log_path``.
+
+    ffmpeg's verbose stderr can grow to hundreds of megabytes on a long
+    encode. Using :pyfunc:`asyncio.subprocess.Process.communicate` buffers
+    the entire stderr stream in process RAM, which can OOM the orchestrator.
+    Instead we wire ffmpeg's stderr fd straight at the open log file so the
+    bytes never round-trip through Python.
+    """
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    process = await asyncio.create_subprocess_exec(
-        *argv,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await process.communicate()
-    log_path.write_bytes(
-        b"-- argv --\n"
-        + shlex.join(argv).encode("utf-8", errors="replace")
-        + b"\n-- stdout --\n"
-        + (stdout or b"")
-        + b"\n-- stderr --\n"
-        + (stderr or b"")
-    )
-    if process.returncode != 0:
+    log_handle = await asyncio.to_thread(open, str(log_path), "wb")
+    try:
+        log_handle.write(b"-- argv --\n")
+        log_handle.write(shlex.join(argv).encode("utf-8", errors="replace"))
+        log_handle.write(b"\n-- stderr --\n")
+        log_handle.flush()
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=log_handle,
+        )
+        returncode = await process.wait()
+    finally:
+        await asyncio.to_thread(log_handle.close)
+
+    if returncode != 0:
         raise FFmpegError(
-            f"ffmpeg exited {process.returncode}; see {log_path} for full output"
+            f"ffmpeg exited {returncode}; see {log_path} for full output"
         )
