@@ -40,9 +40,10 @@ _logger = logging.getLogger(__name__)
 # SDXL pipelines require dimensions divisible by 8.
 _DIM_MULTIPLE = 8
 
-# Anime-style prompt fragments. The user picks a style name in config; the
+# Panel-style prompt fragments. The user picks a style name in config; the
 # storyboard prompt is concatenated with the matching fragment so every shot
-# carries the same baseline aesthetic.
+# carries the same baseline aesthetic. Phase 1 keeps the original anime
+# fragments in place — phase 2 replaces them with STEM motion-comic fragments.
 _STYLE_FRAGMENTS: Mapping[str, str] = {
     "shounen-bright": (
         "shounen anime, bright saturated colors, clean line art, dynamic composition, "
@@ -67,9 +68,9 @@ _NEGATIVE_PROMPT_BASELINE = (
     "bad anatomy, jpeg artifacts"
 )
 
-_PERSONA_BASE_PROMPT = (
-    "anime narrator character portrait, single subject centered, "
-    "looking at camera, neutral background, full upper body framing"
+_STYLE_REFERENCE_BASE_PROMPT = (
+    "style reference, single subject centered, neutral background, "
+    "balanced composition"
 )
 
 
@@ -170,26 +171,26 @@ class SDXLDiffusersProvider(VisualProvider):
 
     # ------------------------------------------------------ VisualProvider API
 
-    async def prepare(self, *, anime_style: str, narrator_seed: int) -> Path:
-        """Generate (or load cached) narrator-persona reference image.
+    async def prepare(self, *, panel_style: str, narrator_seed: int) -> Path:
+        """Generate (or load cached) style-reference image.
 
-        Cache key: ``{anime_style}__{narrator_seed}.png``. Reusing the same
+        Cache key: ``{panel_style}__{narrator_seed}.png``. Reusing the same
         seed across the entire video gives the IP-Adapter a stable reference.
         """
 
         self._persona_dir.mkdir(parents=True, exist_ok=True)
-        cache_path = self._persona_dir / _persona_filename(anime_style, narrator_seed)
+        cache_path = self._persona_dir / _style_reference_filename(panel_style, narrator_seed)
         if cache_path.is_file():
             return cache_path
 
-        style_fragment = _STYLE_FRAGMENTS.get(anime_style)
+        style_fragment = _STYLE_FRAGMENTS.get(panel_style)
         if style_fragment is None:
             _logger.warning(
-                "unknown anime_style %r; using literal value as prompt fragment", anime_style
+                "unknown panel_style %r; using literal value as prompt fragment", panel_style
             )
-            style_fragment = anime_style
+            style_fragment = panel_style
 
-        prompt = f"{_PERSONA_BASE_PROMPT}, {style_fragment}"
+        prompt = f"{_STYLE_REFERENCE_BASE_PROMPT}, {style_fragment}"
         request = ImageGenRequest(
             prompt=prompt,
             negative_prompt=_NEGATIVE_PROMPT_BASELINE,
@@ -402,8 +403,8 @@ def _round_to_multiple(value: int, multiple: int) -> int:
 _FILENAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
-def _persona_filename(anime_style: str, narrator_seed: int) -> str:
-    safe = _FILENAME_SAFE.sub("_", anime_style.strip()) or "style"
+def _style_reference_filename(panel_style: str, narrator_seed: int) -> str:
+    safe = _FILENAME_SAFE.sub("_", panel_style.strip()) or "style"
     return f"{safe}__{narrator_seed}.png"
 
 

@@ -1,12 +1,12 @@
 [project]
 name = "booktoanime"
-version = "0.0.1"
-description = "Convert PDF books into anime-style narrated explainer videos."
+version = "0.1.0"
+description = "StudyPanels — convert PDF books into STEM motion-comic narrated explainer videos."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
-authors = [{ name = "BookToAnime contributors" }]
-keywords = ["pdf", "anime", "video", "tts", "diffusion"]
+authors = [{ name = "StudyPanels contributors" }]
+keywords = ["pdf", "study", "video", "tts", "diffusion", "stem"]
 classifiers = [
   "License :: OSI Approved :: Apache Software License",
   "Programming Language :: Python :: 3",
@@ -43,21 +43,14 @@ openai-compat = ["openai>=1.50.0"]
 anthropic = ["anthropic>=0.40.0"]
 gemini = ["google-genai>=1.0.0"]
 groq = ["groq>=0.13.0"]
-together = ["together>=1.3.0"]
-fireworks = ["fireworks-ai>=0.15.0"]
-mistral = ["mistralai>=1.2.0"]
 all-providers = [
   "openai>=1.50.0",
   "anthropic>=0.40.0",
   "google-genai>=1.0.0",
   "groq>=0.13.0",
-  "together>=1.3.0",
-  "fireworks-ai>=0.15.0",
-  "mistralai>=1.2.0",
 ]
 # TTS providers
 kokoro = ["kokoro>=0.9.4", "torch>=2.2.0"]
-xtts = ["TTS>=0.22.0"]  # opt-in, non-commercial — license warning at init
 # Image generation (SDXL + IP-Adapter)
 visual = [
   "torch>=2.2.0",
@@ -89,10 +82,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/booktoanime"]
-# Hatch's default `packages` already includes non-Python files inside the
-# package directory (web/templates, web/static, state/schema.sql), so no
-# explicit force-include is needed. Adding one duplicated those resources
-# in the wheel and produced "Duplicate name" warnings on every build.
+# Hatchling auto-includes non-Python files (templates/, static/) that live
+# inside `packages = `, so we don't need a force-include block. Phase 3 will
+# add `web/static/fonts/` under the same package tree.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

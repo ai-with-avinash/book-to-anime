@@ -20,7 +20,6 @@ from dataclasses import dataclass
 
 from .artifacts import (
     KenBurns,
-    NarratorPersona,
     Shot,
     Storyboard,
     TopicSection,
@@ -43,7 +42,7 @@ _KEN_BURNS_PATTERNS: tuple[tuple[tuple[float, float, float], tuple[float, float,
 
 @dataclass(frozen=True)
 class StoryboardConfig:
-    anime_style: str
+    panel_style: str
     base_seed: int = 12345
     crossfade_in_ms: int = 400
     crossfade_out_ms: int = 400
@@ -56,7 +55,6 @@ class StoryboardBuilder:
     def build(
         self,
         topics: Sequence[TopicSection],
-        persona: NarratorPersona,
     ) -> Storyboard:
         shots: list[Shot] = []
         order = 1
@@ -102,7 +100,7 @@ class StoryboardBuilder:
         first_keypoint = topic.key_points[0] if topic.key_points else ""
         focus = first_keypoint if chunk_idx == 0 and first_keypoint else excerpt
         return (
-            f"{self._config.anime_style}, anime explainer scene illustrating "
+            f"{self._config.panel_style}, anime explainer scene illustrating "
             f"{topic.title.lower()}: {focus}"
         )
 

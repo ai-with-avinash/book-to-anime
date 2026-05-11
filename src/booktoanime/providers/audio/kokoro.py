@@ -214,10 +214,10 @@ def _run_kokoro(
     text: str,
     voice: str,
     speed: float,
-) -> list[np.ndarray]:
+) -> list[np.ndarray[Any, Any]]:
     """Iterate the engine, returning a list of float32 audio arrays."""
 
-    chunks: list[np.ndarray] = []
+    chunks: list[np.ndarray[Any, Any]] = []
     for result in engine(text, voice=voice, speed=speed):
         audio = _audio_from_result(result)
         if audio is None or audio.size == 0:
@@ -226,7 +226,7 @@ def _run_kokoro(
     return chunks
 
 
-def _audio_from_result(result: Any) -> np.ndarray | None:
+def _audio_from_result(result: Any) -> np.ndarray[Any, Any] | None:
     """Pull the audio array out of a Kokoro yield item.
 
     Upstream's chunk shape is ``(graphemes, phonemes, audio)`` but we don't
@@ -241,7 +241,7 @@ def _audio_from_result(result: Any) -> np.ndarray | None:
     # plus any other indexable container by falling back to the last element.
     last: Any = getattr(result, "audio", None)
     if last is None:
-        if isinstance(result, (tuple, list)):
+        if isinstance(result, tuple | list):
             last = result[-1]
         elif hasattr(result, "__getitem__") and hasattr(result, "__len__"):
             try:

@@ -33,8 +33,6 @@ from .artifacts import (
     ChapterRecord,
     ChaptersIndex,
     ImagesIndex,
-    MouthIndex,
-    MouthShotRecord,
     Shot,
     ShotAudioRecord,
     ShotImageRecord,
@@ -63,10 +61,6 @@ class VideoAssemblerConfig:
     audio_codec: str = "aac"
     crf: int = 20
     preset: str = "medium"
-    # When a per-shot lip-sync mp4 is present we usually disable Ken Burns
-    # so two motion sources (camera + mouth) don't fight. Set True to keep
-    # the zoompan even on lip-synced shots.
-    preserve_ken_burns: bool = False
 
 
 class VideoAssembler:
@@ -94,7 +88,6 @@ class VideoAssembler:
         audio_index: AudioIndex,
         images_index: ImagesIndex,
         job_dir: Path,
-        mouth_index: MouthIndex | None = None,
     ) -> Path:
         out_path = job_dir / "output.mp4"
         if out_path.is_file() and out_path.stat().st_size > 0:
@@ -137,7 +130,6 @@ class VideoAssembler:
             sub_storyboard = _subset_storyboard(storyboard, shots, audio_index)
             sub_audio = _subset_audio(audio_index, shots)
             sub_images = _subset_images(images_index, shots)
-            sub_mouth = _subset_mouth(mouth_index, shots) if mouth_index is not None else None
             chapter_duration = sum(item.duration_seconds for item in sub_audio.items)
 
             if self._write_subtitles:
@@ -151,7 +143,6 @@ class VideoAssembler:
                 storyboard=sub_storyboard,
                 audio_index=sub_audio,
                 images_index=sub_images,
-                mouth_index=sub_mouth,
                 job_dir=job_dir,
                 out_path=chapter_path,
                 log_path=job_dir / "logs" / f"ffmpeg_{chapter_filename}.log",
@@ -187,7 +178,6 @@ class VideoAssembler:
         storyboard: Storyboard,
         audio_index: AudioIndex,
         images_index: ImagesIndex,
-        mouth_index: MouthIndex | None,
         job_dir: Path,
         out_path: Path,
         log_path: Path,
@@ -207,7 +197,6 @@ class VideoAssembler:
             storyboard=storyboard,
             audio_index=audio_index,
             images_index=images_index,
-            mouth_index=mouth_index,
             job_dir=job_dir,
             out_path=out_path,
         )
@@ -306,7 +295,6 @@ class VideoAssembler:
         storyboard: Storyboard,
         audio_index: AudioIndex,
         images_index: ImagesIndex,
-        mouth_index: MouthIndex | None,
         job_dir: Path,
         out_path: Path,
     ) -> list[str]:
@@ -316,32 +304,21 @@ class VideoAssembler:
 
         image_paths = {item.shot_id: job_dir / item.file for item in images_index.items}
         audio_paths = {item.shot_id: job_dir / item.file for item in audio_index.items}
-        mouth_paths: dict[str, Path] = {}
-        if mouth_index is not None:
-            mouth_paths = {item.shot_id: job_dir / item.file for item in mouth_index.items}
 
         argv: list[str] = [self._binary, "-y", "-hide_banner", "-loglevel", "error"]
 
         for shot in storyboard.shots:
-            mouth_path = mouth_paths.get(shot.id)
-            if mouth_path is not None and mouth_path.is_file():
-                # Lip-synced mp4 already carries timing + frames. Use -an
-                # so the mp4's embedded audio doesn't conflict with the
-                # external WAV we add separately.
-                argv += ["-an", "-i", str(mouth_path)]
-            else:
-                argv += [
-                    "-loop", "1",
-                    "-t", f"{durations[shot.id]:.3f}",
-                    "-i", str(image_paths[shot.id]),
-                ]
+            argv += [
+                "-loop", "1",
+                "-t", f"{durations[shot.id]:.3f}",
+                "-i", str(image_paths[shot.id]),
+            ]
         for shot in storyboard.shots:
             argv += ["-i", str(audio_paths[shot.id])]
 
         filter_complex = self._build_filtergraph(
             storyboard=storyboard,
             durations=durations,
-            mouth_paths=mouth_paths,
         )
         argv += ["-filter_complex", filter_complex, "-map", "[vout]", "-map", "[aout]"]
         argv += [
@@ -362,21 +339,17 @@ class VideoAssembler:
         *,
         storyboard: Storyboard,
         durations: dict[str, float],
-        mouth_paths: dict[str, Path] | None = None,
     ) -> str:
         width = self._config.width
         height = self._config.height
         fps = self._config.fps
-        preserve_kb = self._config.preserve_ken_burns
-        mouth_paths = mouth_paths or {}
 
         video_filters: list[str] = []
-        # Per-shot video pre-processing: scale + zoompan for Ken Burns. When a
-        # lip-sync mp4 is present, skip zoompan unless ``preserve_ken_burns``
-        # is set — combining camera motion with mouth motion looks unnatural.
+        # Per-shot video pre-processing: scale + zoompan for Ken Burns. All
+        # shots use static images as of phase 1 — the lip-sync mp4 branch
+        # was removed when the project pivoted away from character narration.
         for idx, shot in enumerate(storyboard.shots):
-            shot_has_mouth = shot.id in mouth_paths and mouth_paths[shot.id].is_file()
-            apply_zoompan = (not shot_has_mouth) or preserve_kb
+            apply_zoompan = True
 
             base_filter = (
                 f"[{idx}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
@@ -503,23 +476,6 @@ def _subset_audio(audio_index: AudioIndex, shots: Sequence[Shot]) -> AudioIndex:
                 sample_rate=item.sample_rate,
             )
             for item in audio_index.items
-            if item.shot_id in shot_ids
-        ],
-    )
-
-
-def _subset_mouth(mouth_index: MouthIndex, shots: Sequence[Shot]) -> MouthIndex:
-    shot_ids = {shot.id for shot in shots}
-    return MouthIndex(
-        schema_version=mouth_index.schema_version,
-        items=[
-            MouthShotRecord(
-                shot_id=item.shot_id,
-                file=item.file,
-                duration_seconds=item.duration_seconds,
-                fps=item.fps,
-            )
-            for item in mouth_index.items
             if item.shot_id in shot_ids
         ],
     )

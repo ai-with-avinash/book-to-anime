@@ -184,7 +184,7 @@ class TopicSummarizer:
         words = payload.get("estimated_words")
         # ``bool`` is an ``int`` subclass in Python; rule it out explicitly so
         # ``"estimated_words": true`` doesn't yield ~0.36 s.
-        if isinstance(words, (int, float)) and not isinstance(words, bool) and words > 0:
+        if isinstance(words, int | float) and not isinstance(words, bool) and words > 0:
             return float(words) * 60.0 / 165.0
         text = str(fallback_text or "")
         if not text:

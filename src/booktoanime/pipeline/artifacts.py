@@ -47,23 +47,11 @@ class TopicSection(BaseModel):
     estimated_narration_seconds: float = Field(ge=0.0)
 
 
-class NarratorPersona(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    seed: int
-    style_descriptor: str
-    reference_image: JobRelPath | None = Field(
-        default=None,
-        description="Path relative to the job directory; populated by the images stage.",
-    )
-
-
 class StructuredDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: int = Field(default=1, ge=1)
     topics: list[TopicSection]
-    narrator_persona: NarratorPersona
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -174,30 +162,6 @@ class AudioIndex(BaseModel):
 
     @classmethod
     def from_path(cls, path: Path) -> AudioIndex:
-        return cls.model_validate_json(path.read_bytes())
-
-
-class MouthShotRecord(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    shot_id: str
-    file: JobRelPath
-    duration_seconds: float
-    fps: float
-
-
-class MouthIndex(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    schema_version: int = Field(default=1, ge=1)
-    items: list[MouthShotRecord] = Field(default_factory=list)
-
-    def save(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(self.model_dump_json(indent=2).encode("utf-8"))
-
-    @classmethod
-    def from_path(cls, path: Path) -> MouthIndex:
         return cls.model_validate_json(path.read_bytes())
 
 

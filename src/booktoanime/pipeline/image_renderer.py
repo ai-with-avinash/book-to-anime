@@ -23,7 +23,7 @@ from pathlib import Path
 
 from ..errors import BookToAnimeError, ProviderError
 from ..providers import ImageGenRequest, VisualProvider
-from .artifacts import ImagesIndex, NarratorPersona, Shot, ShotImageRecord, Storyboard
+from .artifacts import ImagesIndex, Shot, ShotImageRecord, Storyboard
 from .events import ProgressEvent, ProgressEventBus, ProgressKind
 from .stages import Stage
 
@@ -37,11 +37,10 @@ class ImageRendererConfig:
     steps: int = 28
     guidance: float = 5.5
     concurrency: int = 2
-    # Style key passed verbatim to ``VisualProvider.prepare`` so the persona
-    # cache key matches what the visual provider's _STYLE_FRAGMENTS lookup
-    # expects. Falling back to parsing the persona descriptor produced
-    # cache keys like "shounen-bright_narrator_persona__<seed>.png".
-    anime_style: str = "shounen-bright"
+    # Panel-style key used by the visual provider's _STYLE_FRAGMENTS lookup.
+    # Phase 2 wires this to STYLE_SEEDING; phase 1 plumbs the name through
+    # untouched so renames in config + manifest land cleanly.
+    panel_style: str = "clean-linework"
 
 
 class ShotImageRenderer:
@@ -60,15 +59,9 @@ class ShotImageRenderer:
         self,
         *,
         storyboard: Storyboard,
-        persona: NarratorPersona,
         job_dir: Path,
-    ) -> tuple[ImagesIndex, Path]:
-        """Render all shots and return ``(index, persona_reference_path)``.
-
-        The persona reference path is returned so the orchestrator can copy
-        it into the job directory and store a relative path in
-        ``structured.json`` (avoids leaking the absolute model-cache path).
-        """
+    ) -> ImagesIndex:
+        """Render all shots and return the resulting :class:`ImagesIndex`."""
 
         images_dir = job_dir / "images"
         images_dir.mkdir(parents=True, exist_ok=True)
@@ -76,8 +69,6 @@ class ShotImageRenderer:
 
         completed = _reconcile_existing_index(index_path, storyboard, images_dir)
         existing_ids = {record.shot_id for record in completed}
-
-        persona_reference = await self._ensure_persona_reference(persona, job_dir)
 
         semaphore = asyncio.Semaphore(max(1, self._config.concurrency))
         total = len(storyboard.shots)
@@ -93,7 +84,7 @@ class ShotImageRenderer:
                 if first_error is not None:
                     raise asyncio.CancelledError()
                 try:
-                    record = await self._render_one(shot, persona_reference, images_dir)
+                    record = await self._render_one(shot, images_dir)
                 except BookToAnimeError as exc:
                     if first_error is None:
                         first_error = exc
@@ -148,26 +139,11 @@ class ShotImageRenderer:
         if first_error is not None:
             raise first_error
 
-        return ImagesIndex(items=completed), persona_reference
-
-    async def _ensure_persona_reference(
-        self,
-        persona: NarratorPersona,
-        job_dir: Path,
-    ) -> Path:
-        if persona.reference_image:
-            absolute = (job_dir / persona.reference_image).resolve()
-            if absolute.is_file():
-                return absolute
-
-        return await self._provider.prepare(
-            anime_style=self._config.anime_style, narrator_seed=persona.seed
-        )
+        return ImagesIndex(items=completed)
 
     async def _render_one(
         self,
         shot: Shot,
-        persona_reference: Path,
         images_dir: Path,
     ) -> ShotImageRecord:
         out_path = images_dir / f"{shot.id}.png"
@@ -179,7 +155,9 @@ class ShotImageRenderer:
             seed=shot.seed,
             steps=self._config.steps,
             guidance=self._config.guidance,
-            reference_image=persona_reference if shot.use_persona_reference else None,
+            # Phase 1 removed the per-job style/persona reference. Phase 2
+            # reintroduces an IP-Adapter reference produced by STYLE_SEEDING.
+            reference_image=None,
             reference_strength=shot.ip_adapter_strength,
         )
         try:

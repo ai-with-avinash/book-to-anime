@@ -20,8 +20,8 @@ from booktoanime.providers import registry
 from booktoanime.providers.base import ImageGenRequest
 from booktoanime.providers.visual.sdxl_diffusers import (
     SDXLDiffusersProvider,
-    _persona_filename,
     _round_to_multiple,
+    _style_reference_filename,
 )
 
 
@@ -71,14 +71,14 @@ async def test_prepare_writes_persona_and_caches_path(tmp_path: Path) -> None:
     pipeline = _StubPipeline()
     provider = _provider(persona_dir=tmp_path, pipeline=pipeline)
 
-    path1 = await provider.prepare(anime_style="shounen-bright", narrator_seed=42)
+    path1 = await provider.prepare(panel_style="shounen-bright", narrator_seed=42)
     assert path1.is_file()
     assert path1.parent == tmp_path
     assert path1.name == "shounen-bright__42.png"
     assert len(pipeline.calls) == 1
 
     # Calling again with the same key reuses the cached file.
-    path2 = await provider.prepare(anime_style="shounen-bright", narrator_seed=42)
+    path2 = await provider.prepare(panel_style="shounen-bright", narrator_seed=42)
     assert path2 == path1
     assert len(pipeline.calls) == 1, "second prepare() should not re-render"
 
@@ -88,16 +88,16 @@ async def test_prepare_unknown_style_uses_literal_value(tmp_path: Path) -> None:
     pipeline = _StubPipeline()
     provider = _provider(persona_dir=tmp_path, pipeline=pipeline)
 
-    await provider.prepare(anime_style="vaporwave", narrator_seed=7)
+    await provider.prepare(panel_style="vaporwave", narrator_seed=7)
 
     prompt = pipeline.calls[0]["prompt"]
     assert "vaporwave" in prompt
 
 
 @pytest.mark.asyncio
-async def test_prepare_persona_filename_safe_for_special_chars(tmp_path: Path) -> None:
+async def test_prepare_style_reference_filename_safe_for_special_chars(tmp_path: Path) -> None:
     provider = _provider(persona_dir=tmp_path)
-    path = await provider.prepare(anime_style="some/weird style!", narrator_seed=1)
+    path = await provider.prepare(panel_style="some/weird style!", narrator_seed=1)
     assert path.name == "some_weird_style___1.png"
 
 
@@ -139,7 +139,7 @@ async def test_render_uses_persona_reference_and_sets_scale(tmp_path: Path) -> N
     persona_dir = tmp_path / "personas"
     provider = _provider(persona_dir=persona_dir, pipeline=pipeline)
 
-    persona_path = await provider.prepare(anime_style="shounen-bright", narrator_seed=42)
+    persona_path = await provider.prepare(panel_style="shounen-bright", narrator_seed=42)
 
     request = ImageGenRequest(
         prompt="hero in a school hallway",
@@ -238,7 +238,7 @@ async def test_pipeline_factory_invoked_only_on_first_use(tmp_path: Path) -> Non
     )
 
     assert factory_calls == 0
-    await provider.prepare(anime_style="shounen-bright", narrator_seed=1)
+    await provider.prepare(panel_style="shounen-bright", narrator_seed=1)
     assert factory_calls == 1
 
     await provider.render(
@@ -269,7 +269,7 @@ async def test_pipeline_import_error_surfaces_install_hint(tmp_path: Path) -> No
         pipeline_factory=factory,
     )
     with pytest.raises(ImportError, match=r"booktoanime\[visual\]"):
-        await provider.prepare(anime_style="shounen-bright", narrator_seed=1)
+        await provider.prepare(panel_style="shounen-bright", narrator_seed=1)
 
 
 # --------------------------------------------------------------- helpers
@@ -289,10 +289,10 @@ def test_round_to_multiple(value: int, multiple: int, expected: int) -> None:
     assert _round_to_multiple(value, multiple) == expected
 
 
-def test_persona_filename_strips_unsafe_chars() -> None:
-    assert _persona_filename("shounen-bright", 42) == "shounen-bright__42.png"
-    assert _persona_filename("a/b c", 0) == "a_b_c__0.png"
-    assert _persona_filename("", 1) == "style__1.png"
+def test_style_reference_filename_strips_unsafe_chars() -> None:
+    assert _style_reference_filename("shounen-bright", 42) == "shounen-bright__42.png"
+    assert _style_reference_filename("a/b c", 0) == "a_b_c__0.png"
+    assert _style_reference_filename("", 1) == "style__1.png"
 
 
 # --------------------------------------------------------------- registry

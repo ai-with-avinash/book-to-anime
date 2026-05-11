@@ -98,9 +98,9 @@ class _FakeVisual(VisualProvider):
         self._fail_after = fail_after
         self.render_count = 0
 
-    async def prepare(self, *, anime_style: str, narrator_seed: int) -> Path:
+    async def prepare(self, *, panel_style: str, narrator_seed: int) -> Path:
         self._persona_dir.mkdir(parents=True, exist_ok=True)
-        path = self._persona_dir / f"{anime_style}__{narrator_seed}.png"
+        path = self._persona_dir / f"{panel_style}__{narrator_seed}.png"
         if not path.is_file():
             Image.new("RGB", (64, 64), (10, 30, 60)).save(path)
         return path
@@ -127,7 +127,7 @@ class _FakeVisual(VisualProvider):
 
 def _build_manifest(*, job_id: str, source_pdf: str = "source.pdf") -> JobManifest:
     config = JobConfig(
-        anime_style="shounen-bright",
+        panel_style="shounen-bright",
         narration=NarrationConfig(voice_id="fake_voice", language="en-US"),
         depth="undergraduate",
         length_preset="short",
@@ -210,7 +210,6 @@ async def test_orchestrator_runs_to_completion(
     assert (job_dir / "extracted" / "parsed.json").is_file()
     structured = StructuredDocument.from_path(job_dir / "structured.json")
     assert structured.topics, "expected at least one topic"
-    assert structured.narrator_persona.reference_image is not None
 
     storyboard = Storyboard.from_path(job_dir / "storyboard.json")
     assert storyboard.shots, "expected at least one shot"

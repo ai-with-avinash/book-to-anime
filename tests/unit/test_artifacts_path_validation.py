@@ -7,7 +7,6 @@ from pydantic import ValidationError
 
 from booktoanime.parsing.models import ExtractedImage, ParsedDocument, ParsedPage, PDFMetadata
 from booktoanime.pipeline.artifacts import (
-    NarratorPersona,
     ShotAudioRecord,
     ShotImageRecord,
 )
@@ -30,12 +29,6 @@ def test_extracted_image_rejects_unsafe_paths(bad_value: str) -> None:
 def test_extracted_image_accepts_safe_relative() -> None:
     img = ExtractedImage(id="x", file="extracted/img_0_0.png", width=10, height=10)
     assert img.file == "extracted/img_0_0.png"
-
-
-@pytest.mark.parametrize("bad_value", ["/abs/path", "../escape"])
-def test_narrator_persona_rejects_unsafe_paths(bad_value: str) -> None:
-    with pytest.raises(ValidationError):
-        NarratorPersona(seed=1, style_descriptor="x", reference_image=bad_value)
 
 
 @pytest.mark.parametrize("bad_value", ["/abs", "../escape", "ok/../../escape"])

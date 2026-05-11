@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
-import string
 from pathlib import Path
 from typing import cast
 
@@ -19,7 +18,6 @@ from ..pipeline.manifest import (
     JobConfig,
     JobManifest,
     LengthPreset,
-    LipSyncConfig,
     NarrationConfig,
     Profile,
     ProvidersConfig,
@@ -94,7 +92,7 @@ def build_job_router() -> APIRouter:
     async def create_job(
         request: Request,
         pdf: UploadFile,
-        anime_style: str = Form("shounen-bright"),
+        panel_style: str = Form("clean-linework"),
         voice_id: str = Form(...),
         language: str = Form("en-US"),
         speed: float = Form(1.0),
@@ -103,7 +101,6 @@ def build_job_router() -> APIRouter:
         minutes_per_topic: float | None = Form(None),
         aspect_ratio: AspectRatio = Form("16:9"),
         profile: Profile = Form("default"),
-        lipsync_enabled: bool = Form(False),
     ) -> JobCreatedResponse:
         if pdf.content_type not in {"application/pdf", "application/octet-stream", None}:
             raise HTTPException(
@@ -115,7 +112,6 @@ def build_job_router() -> APIRouter:
         repo: JobRepository = request.app.state.repo
         data_dir: Path = request.app.state.settings.data_dir
         providers: ProvidersConfig = request.app.state.config_overrides["providers_obj"]
-        default_lipsync_provider = providers.lipsync
 
         job_id = _generate_job_id()
         job_dir = data_dir / "jobs" / job_id
@@ -125,7 +121,7 @@ def build_job_router() -> APIRouter:
         await _stream_upload(pdf, source_pdf)
 
         config = JobConfig(
-            anime_style=anime_style,
+            panel_style=panel_style,
             narration=NarrationConfig(voice_id=voice_id, language=language, speed=speed),
             depth=depth,
             length_preset=length_preset,
@@ -133,10 +129,6 @@ def build_job_router() -> APIRouter:
             aspect_ratio=aspect_ratio,
             profile=profile,
             providers=providers,
-            lipsync=LipSyncConfig(
-                enabled=lipsync_enabled,
-                provider=default_lipsync_provider,
-            ),
         )
 
         manifest = JobManifest.for_new_job(job_id=job_id, config=config)
@@ -268,15 +260,12 @@ def _load_chapters(request: Request, job_id: str) -> list[ChapterSummary]:
     return summaries
 
 
-_ALPHABET = string.ascii_uppercase + string.digits
-
-
 def _generate_job_id() -> str:
-    """26-char alphanumeric job id. Sufficiently unique for one user's jobs;
-    we don't need ULID's monotonic-time guarantee.
+    """URL-safe random job id (~17 chars). Plenty of entropy for one user's
+    jobs; no monotonic-time guarantee needed.
     """
 
-    return "".join(secrets.choice(_ALPHABET) for _ in range(26))
+    return secrets.token_urlsafe(13)
 
 
 async def _stream_upload(upload: UploadFile, dest: Path) -> None:

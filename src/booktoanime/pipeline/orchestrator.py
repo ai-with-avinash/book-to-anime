@@ -21,29 +21,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..errors import BookToAnimeError, ParsingError, ProviderError
+from ..errors import BookToAnimeError, ParsingError
 from ..parsing import PDFParser
 from ..parsing.models import ParsedDocument
 from ..providers import AudioProvider, LanguageProvider, VisualProvider
-from ..providers.base import LipSyncProvider
 from ..state import JobRepository, JobStatus
 from .artifacts import (
     AudioIndex,
     ImagesIndex,
-    MouthIndex,
-    NarratorPersona,
     Storyboard,
     StructuredDocument,
 )
 from .events import ProgressEvent, ProgressEventBus, ProgressKind
 from .image_renderer import ImageRendererConfig, ShotImageRenderer
 from .manifest import JobManifest
-from .mouth_animator import MouthAnimator, MouthAnimatorConfig
-from .narrator_persona import PersonaSeederConfig, derive_persona
 from .stages import STAGE_ORDER, Stage
 from .storyboard import StoryboardBuilder, StoryboardConfig
 from .summarizer import SummarizationConfig, TopicSummarizer
@@ -66,19 +60,10 @@ class PipelineDependencies:
     # Optional ffmpeg runner override (tests inject a stub that fakes the binary).
     ffmpeg_runner: FFmpegRunner | None = None
     ffmpeg_binary: str | None = None
-    # Lip-sync is opt-in. When the JobConfig disables it the orchestrator
-    # short-circuits the MOUTH_ANIMATION stage without touching this provider,
-    # so callers that don't ship lip-sync can leave it None.
-    lipsync: LipSyncProvider | None = None
 
 
 class PipelineOrchestrator:
-    """Runs the whole pipeline (except video assembly) for a single job.
-
-    Video assembly lives in module 7 and is invoked by the orchestrator's
-    caller after this class succeeds. Keeping assembly out of here lets
-    module 5 ship + be tested without an ffmpeg dependency.
-    """
+    """Runs the whole pipeline for a single job."""
 
     def __init__(self, deps: PipelineDependencies) -> None:
         self._deps = deps
@@ -164,14 +149,14 @@ class PipelineOrchestrator:
             await self._run_parsing(job_dir=job_dir)
         elif stage == Stage.STRUCTURING:
             await self._run_structuring(manifest=manifest, job_dir=job_dir)
+        elif stage == Stage.PERSONA_SEEDING:
+            await self._run_persona_seeding(manifest=manifest, job_dir=job_dir)
         elif stage == Stage.STORYBOARD:
             await self._run_storyboard(manifest=manifest, job_dir=job_dir)
         elif stage == Stage.IMAGES:
             await self._run_images(manifest=manifest, job_dir=job_dir)
         elif stage == Stage.AUDIO:
             await self._run_audio(manifest=manifest, job_dir=job_dir)
-        elif stage == Stage.MOUTH_ANIMATION:
-            await self._run_mouth_animation(manifest=manifest, job_dir=job_dir)
         elif stage == Stage.ASSEMBLY:
             await self._run_assembly(manifest=manifest, job_dir=job_dir)
         else:  # pragma: no cover - exhaustively handled above
@@ -212,16 +197,35 @@ class PipelineOrchestrator:
         # the explainer here without using the result was burning vision-
         # provider credits with no observable effect.
 
-        persona = derive_persona(
-            PersonaSeederConfig(
-                anime_style=manifest.config.anime_style,
-                narration_language=manifest.config.narration.language,
-                voice_id=manifest.config.narration.voice_id,
-            )
-        )
         await asyncio.to_thread(
-            StructuredDocument(topics=sections, narrator_persona=persona).save,
+            StructuredDocument(topics=sections).save,
             job_dir / "structured.json",
+        )
+
+    async def _run_persona_seeding(
+        self,
+        *,
+        manifest: JobManifest,
+        job_dir: Path,
+    ) -> None:
+        """Phase-1 stub for the persona-seeding stage.
+
+        The original anime-narrator persona was removed when the project
+        pivoted away from character-driven explainers. Phase 2 replaces this
+        stub with ``STYLE_SEEDING`` — a one-time style-anchor render used by
+        IP-Adapter on SDXL fallback shots.
+        """
+
+        del manifest, job_dir  # phase-1 stub doesn't need either
+        await self._deps.bus.emit(
+            ProgressEvent(
+                kind=ProgressKind.INFO,
+                stage=Stage.PERSONA_SEEDING.value,
+                message=(
+                    "persona seeding stubbed; replaced in phase 2 with style "
+                    "seeding"
+                ),
+            )
         )
 
     async def _run_storyboard(
@@ -232,9 +236,9 @@ class PipelineOrchestrator:
     ) -> None:
         structured = StructuredDocument.from_path(job_dir / "structured.json")
         builder = StoryboardBuilder(
-            StoryboardConfig(anime_style=manifest.config.anime_style)
+            StoryboardConfig(panel_style=manifest.config.panel_style)
         )
-        storyboard = builder.build(structured.topics, structured.narrator_persona)
+        storyboard = builder.build(structured.topics)
         await asyncio.to_thread(storyboard.save, job_dir / "storyboard.json")
 
     async def _run_images(
@@ -243,7 +247,6 @@ class PipelineOrchestrator:
         manifest: JobManifest,
         job_dir: Path,
     ) -> None:
-        structured = StructuredDocument.from_path(job_dir / "structured.json")
         storyboard = Storyboard.from_path(job_dir / "storyboard.json")
 
         renderer = ShotImageRenderer(
@@ -252,34 +255,14 @@ class PipelineOrchestrator:
                 concurrency=_concurrency_for_profile(manifest.config.profile),
                 width=_width_for_aspect(manifest.config.aspect_ratio),
                 height=_height_for_aspect(manifest.config.aspect_ratio),
-                anime_style=manifest.config.anime_style,
+                panel_style=manifest.config.panel_style,
             ),
             bus=self._deps.bus,
         )
-        _index, persona_reference = await renderer.render(
+        await renderer.render(
             storyboard=storyboard,
-            persona=structured.narrator_persona,
             job_dir=job_dir,
         )
-
-        # Copy the persona reference into the job directory so the artifact
-        # path stays portable (relative to job_dir). The renderer's reference
-        # may live under the model cache or the user data dir.
-        if structured.narrator_persona.reference_image is None:
-            persona_dst_dir = job_dir / "personas"
-            persona_dst_dir.mkdir(parents=True, exist_ok=True)
-            persona_dst = persona_dst_dir / persona_reference.name
-            if persona_reference.resolve() != persona_dst.resolve():
-                await asyncio.to_thread(shutil.copyfile, persona_reference, persona_dst)
-            persona_rel = f"personas/{persona_dst.name}"
-            structured = structured.model_copy(
-                update={
-                    "narrator_persona": structured.narrator_persona.model_copy(
-                        update={"reference_image": persona_rel}
-                    )
-                }
-            )
-            await asyncio.to_thread(structured.save, job_dir / "structured.json")
 
     async def _run_audio(
         self,
@@ -300,47 +283,6 @@ class PipelineOrchestrator:
         )
         await narrator.synthesize(storyboard=storyboard, job_dir=job_dir)
 
-    async def _run_mouth_animation(
-        self,
-        *,
-        manifest: JobManifest,
-        job_dir: Path,
-    ) -> None:
-        if not manifest.config.lipsync.enabled:
-            await self._deps.bus.emit(
-                ProgressEvent(
-                    kind=ProgressKind.INFO,
-                    stage=Stage.MOUTH_ANIMATION.value,
-                    message="lipsync disabled; skipping mouth animation",
-                )
-            )
-            return
-
-        if self._deps.lipsync is None:
-            raise ProviderError(
-                "lipsync.enabled is true but no LipSyncProvider was wired into "
-                "PipelineDependencies; pass `lipsync=...` from the launcher or "
-                "set lipsync.enabled to false in the job config."
-            )
-
-        storyboard = Storyboard.from_path(job_dir / "storyboard.json")
-        images_index = ImagesIndex.from_path(job_dir / "images" / "index.json")
-        audio_index = AudioIndex.from_path(job_dir / "audio" / "index.json")
-
-        animator = MouthAnimator(
-            self._deps.lipsync,
-            MouthAnimatorConfig(
-                concurrency=_concurrency_for_profile(manifest.config.profile),
-            ),
-            bus=self._deps.bus,
-        )
-        await animator.animate(
-            storyboard=storyboard,
-            images_index=images_index,
-            audio_index=audio_index,
-            job_dir=job_dir,
-        )
-
     async def _run_assembly(
         self,
         *,
@@ -350,16 +292,11 @@ class PipelineOrchestrator:
         storyboard = Storyboard.from_path(job_dir / "storyboard.json")
         audio_index = AudioIndex.from_path(job_dir / "audio" / "index.json")
         images_index = ImagesIndex.from_path(job_dir / "images" / "index.json")
-        mouth_index_path = job_dir / "mouth" / "index.json"
-        mouth_index: MouthIndex | None = None
-        if manifest.config.lipsync.enabled and mouth_index_path.is_file():
-            mouth_index = MouthIndex.from_path(mouth_index_path)
 
         assembler = VideoAssembler(
             VideoAssemblerConfig(
                 width=_width_for_aspect(manifest.config.aspect_ratio),
                 height=_height_for_aspect(manifest.config.aspect_ratio),
-                preserve_ken_burns=manifest.config.lipsync.preserve_ken_burns,
             ),
             bus=self._deps.bus,
             runner=self._deps.ffmpeg_runner,
@@ -369,7 +306,6 @@ class PipelineOrchestrator:
             storyboard=storyboard,
             audio_index=audio_index,
             images_index=images_index,
-            mouth_index=mouth_index,
             job_dir=job_dir,
         )
 
@@ -400,7 +336,6 @@ __all__ = [
     "AudioIndex",
     "ImagesIndex",
     "JobManifest",
-    "NarratorPersona",
     "PipelineDependencies",
     "PipelineOrchestrator",
     "Storyboard",
