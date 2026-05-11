@@ -102,6 +102,15 @@ class SDXLPipelineLike(Protocol):
     def set_ip_adapter_scale(self, scale: float) -> None:
         ...
 
+    def load_ip_adapter(
+        self,
+        pretrained_model_name_or_path_or_dict: str,
+        *,
+        subfolder: str = ...,
+        weight_name: str = ...,
+    ) -> None:
+        ...
+
 
 class SDXLDiffusersProvider(VisualProvider):
     name = "sdxl_diffusers"
@@ -155,6 +164,13 @@ class SDXLDiffusersProvider(VisualProvider):
         self._pipeline: SDXLPipelineLike | None = pipeline
         self._pipeline_factory = pipeline_factory
         self._pipeline_lock = asyncio.Lock()
+        # IP-Adapter is loaded lazily on the first render that supplies a
+        # reference image. The bootstrap STYLE_SEEDING render has no reference
+        # yet, so loading IP-Adapter at pipeline-build time would make
+        # text-only renders fail with `encoder_hid_dim_type='ip_image_proj'`
+        # requires `image_embeds`.
+        self._ip_adapter_loaded = False
+        self._ip_adapter_lock = asyncio.Lock()
 
     # ------------------------------------------------------ VisualProvider API
 
@@ -215,6 +231,8 @@ class SDXLDiffusersProvider(VisualProvider):
             raise ProviderError("image generation request has empty prompt")
 
         pipeline = await self._get_pipeline()
+        if persona_image is not None:
+            await self._ensure_ip_adapter_loaded(pipeline)
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         width = _round_to_multiple(request.width or self._default_width, _DIM_MULTIPLE)
@@ -294,14 +312,34 @@ class SDXLDiffusersProvider(VisualProvider):
             self._checkpoint, torch_dtype=dtype
         ).to(device)
 
-        if self._ip_adapter_repo is not None:
-            pipeline.load_ip_adapter(
-                self._ip_adapter_repo,
-                subfolder=self._ip_adapter_subfolder,
-                weight_name=self._ip_adapter_weights,
-            )
+        # IP-Adapter is loaded lazily on first reference-bearing render
+        # (see _ensure_ip_adapter_loaded). Loading at build time would
+        # break text-only renders such as STYLE_SEEDING bootstrap.
 
         return pipeline  # type: ignore[no-any-return]
+
+    async def _ensure_ip_adapter_loaded(self, pipeline: SDXLPipelineLike) -> None:
+        """Load IP-Adapter weights once, on first render that supplies a reference."""
+        if self._ip_adapter_loaded or self._ip_adapter_repo is None:
+            return
+        async with self._ip_adapter_lock:
+            if self._ip_adapter_loaded:
+                return
+            repo = self._ip_adapter_repo
+            assert repo is not None  # guarded above
+
+            def _load() -> None:
+                pipeline.load_ip_adapter(
+                    repo,
+                    subfolder=self._ip_adapter_subfolder,
+                    weight_name=self._ip_adapter_weights,
+                )
+
+            try:
+                await asyncio.to_thread(_load)
+            except Exception as exc:
+                raise ProviderError(f"IP-Adapter load failed: {exc}") from exc
+            self._ip_adapter_loaded = True
 
 
 def _invoke_pipeline(pipeline: SDXLPipelineLike, args: _PipelineCallArgs) -> Image.Image:
@@ -309,6 +347,16 @@ def _invoke_pipeline(pipeline: SDXLPipelineLike, args: _PipelineCallArgs) -> Ima
 
     pipeline_device = _detect_pipeline_device(pipeline)
     generator = _make_generator(args.seed, device=pipeline_device)
+
+    call_kwargs: dict[str, Any] = dict(
+        prompt=args.prompt,
+        negative_prompt=args.negative_prompt,
+        width=args.width,
+        height=args.height,
+        num_inference_steps=args.steps,
+        guidance_scale=args.guidance,
+        generator=generator,
+    )
 
     if args.ip_adapter_image is not None:
         # Apply IP-Adapter scale just-in-time per shot so different shots can
@@ -318,17 +366,9 @@ def _invoke_pipeline(pipeline: SDXLPipelineLike, args: _PipelineCallArgs) -> Ima
         # CUDA, or memory errors so they propagate.
         with contextlib.suppress(AttributeError, RuntimeError):
             pipeline.set_ip_adapter_scale(args.ip_adapter_scale)
+        call_kwargs["ip_adapter_image"] = args.ip_adapter_image
 
-    output = pipeline(
-        prompt=args.prompt,
-        negative_prompt=args.negative_prompt,
-        width=args.width,
-        height=args.height,
-        num_inference_steps=args.steps,
-        guidance_scale=args.guidance,
-        generator=generator,
-        ip_adapter_image=args.ip_adapter_image,
-    )
+    output = pipeline(**call_kwargs)
 
     images = getattr(output, "images", None)
     if not images:

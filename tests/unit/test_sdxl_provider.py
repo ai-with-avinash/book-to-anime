@@ -37,6 +37,7 @@ class _StubPipeline:
     fill: tuple[int, int, int] = (180, 100, 60)
     calls: list[dict[str, Any]] = field(default_factory=list)
     scale_calls: list[float] = field(default_factory=list)
+    ip_adapter_loads: list[tuple[str, str, str]] = field(default_factory=list)
 
     def __call__(self, **kwargs: Any) -> _StubResult:
         self.calls.append(kwargs)
@@ -46,6 +47,15 @@ class _StubPipeline:
 
     def set_ip_adapter_scale(self, scale: float) -> None:
         self.scale_calls.append(float(scale))
+
+    def load_ip_adapter(
+        self,
+        repo: str,
+        *,
+        subfolder: str = "",
+        weight_name: str = "",
+    ) -> None:
+        self.ip_adapter_loads.append((repo, subfolder, weight_name))
 
 
 def _provider(
@@ -130,7 +140,9 @@ async def test_render_writes_png_with_normalized_dimensions(tmp_path: Path) -> N
     assert call["height"] == 256
     assert call["num_inference_steps"] == 3
     assert call["guidance_scale"] == 4.5
-    assert call["ip_adapter_image"] is None
+    # No reference image → ip_adapter_image kwarg dropped entirely so the
+    # UNet does not require image_embeds when IP-Adapter is unloaded.
+    assert "ip_adapter_image" not in call
 
 
 @pytest.mark.asyncio
