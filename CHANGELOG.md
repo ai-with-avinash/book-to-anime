@@ -148,3 +148,55 @@ consumers; the binary rename to `studypanels` is queued for v0.2.
   new `artifacts.style_reference` field and their storyboards lack the
   `visual_kind` / `figure_id` columns. Back up or delete
   `<data_dir>/jobs/` after pulling phase 2.
+
+### Phase 3 — Figure-first rendering (Unreleased)
+
+- **New `pipeline/panel_composer.py`** — Pillow-based panel composition.
+  Two helpers:
+  - `compose_figure_panel(figure_path, caption, title, panel_style,
+    target_size)` — aspect-aware layout. Source aspect ≥ 1.2 gets a
+    bottom-strip layout (figure on top, caption beneath); portrait /
+    square sources get a side-panel layout (square figure block on the
+    left, caption column on the right). Letterboxes figures inside their
+    panel, applies the panel-style background colour + contrast-checked
+    text colour, wraps captions with overflow ellipsis.
+  - `compose_title_card(title, subtitle, panel_style, target_size)` —
+    centred 56 pt bold title with 28 pt subtitle on the panel-style
+    background.
+  Both raise `RenderError` on unknown `panel_style` or font-load failure.
+- **Bundled OFL-licensed font** — Inter Regular + Bold (407 KB / 415 KB)
+  ship under `src/booktoanime/web/static/fonts/` and are loaded via
+  `importlib.resources` so the path works from an installed wheel as well
+  as from a source checkout. Attributed in `NOTICE` under OFL-1.1.
+- **`pipeline/image_renderer.py` dispatch on `Shot.visual_kind`:**
+  - `VisualKind.FIGURE` — resolves the source figure via
+    `ExtractedImage.id` lookup, then composes a panel through
+    `panel_composer.compose_figure_panel`. **Bypasses SDXL entirely.**
+    Missing `figure_id` on a FIGURE shot now raises `RenderError`
+    (previously surfaced as a `KeyError`).
+  - `VisualKind.TITLE_CARD` — composes a card via
+    `panel_composer.compose_title_card`. **Bypasses SDXL.**
+  - `VisualKind.ILLUSTRATION` — existing SDXL path, with the
+    `STYLE_SEEDING` reference image forwarded as the IP-Adapter anchor.
+- **Split semaphores:** GPU-bound `_sdxl_semaphore` keeps its
+  profile-driven cap; new CPU-bound `_compose_semaphore` is sized to
+  `min(8, os.cpu_count() or 1)` so the Pillow path stops serialising
+  behind SDXL.
+- **Small-figure guard:** figures whose shortest edge is below 256 px
+  fall through to SDXL with an `INFO` event so operators can spot a job
+  whose figures were all bumped to fallback.
+- **End-of-stage telemetry:** the image stage emits a single
+  `ProgressEvent` with `figure_shots=… illustration_shots=… title_cards=…`
+  so operators can monitor the figure-first vs. SDXL split without
+  parsing per-shot events.
+- **Tests:** new `tests/unit/test_panel_composer.py` covers layout
+  dispatch, palette correctness (BG-pixel spot check, not pixel-hash),
+  sentence-cleaning, unknown-style + missing-file + font-load-failure
+  error paths. `tests/unit/test_image_renderer.py` extended with FIGURE /
+  TITLE_CARD bypass assertions, missing/unknown `figure_id` error paths,
+  small-figure fall-through, split-semaphore concurrency cap, and the
+  end-of-stage telemetry event.
+- **Wheel packaging:** hatchling's auto-include picks up the new
+  `web/static/fonts/` subtree under `packages = ["src/booktoanime"]`;
+  no force-include block needed. The wheel build is verified to bundle
+  `Inter-{Regular,Bold}.ttf` via `unzip -l`.
