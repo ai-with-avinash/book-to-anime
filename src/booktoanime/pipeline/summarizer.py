@@ -182,16 +182,21 @@ class TopicSummarizer:
     ) -> dict[str, object]:
         depth_instruction = _DEPTH_INSTRUCTIONS[self._config.depth]
         word_target = max(40, int(target_seconds * 165 / 60))
+        # ``/no_think`` is a qwen3 / qwen2.5-reasoning directive that disables
+        # the model's <think>...</think> chain so the entire token budget is
+        # spent on the JSON answer. Models that don't recognize it ignore it
+        # harmlessly.
         system_prompt = (
-            "You are condensing one chapter of a document for a narrated "
-            "explainer video. Use concrete examples and clear definitions. "
-            "Match the source's domain — don't force STEM framing on non-"
-            "technical content. " + depth_instruction
+            "/no_think You are condensing one chapter of a document for a "
+            "narrated explainer video. Use concrete examples and clear "
+            "definitions. Match the source's domain — don't force STEM "
+            "framing on non-technical content. " + depth_instruction
         )
         user_prompt = (
+            "/no_think\n"
             f"Topic title: {title}\n"
             f"Target narration length: {target_seconds:.0f} seconds (~{word_target} words).\n"
-            "Reply with valid JSON only:\n"
+            "Reply with valid JSON only, no preamble, no thinking, no markdown fences:\n"
             '{"summary": "<narration-ready prose>",'
             ' "key_points": ["point 1", "point 2", ...],'
             ' "estimated_words": <int>}\n\n'
