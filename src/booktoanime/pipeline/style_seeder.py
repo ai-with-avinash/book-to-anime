@@ -101,7 +101,7 @@ class StyleSeeder:
                 width=1024,
                 height=1024,
                 seed=self._config.seed,
-                steps=28,
+                steps=12,
                 guidance=5.5,
                 reference_image=None,
                 reference_strength=0.0,

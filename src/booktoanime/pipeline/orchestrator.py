@@ -346,18 +346,18 @@ def _concurrency_for_profile(profile: str) -> int:
 
 
 _ASPECT_RATIO_TO_DIMS: dict[str, tuple[int, int]] = {
-    "16:9": (1920, 1080),
-    "9:16": (1080, 1920),
-    "1:1": (1080, 1080),
+    "16:9": (1024, 576),
+    "9:16": (576, 1024),
+    "1:1": (768, 768),
 }
 
 
 def _width_for_aspect(aspect: str) -> int:
-    return _ASPECT_RATIO_TO_DIMS.get(aspect, (1920, 1080))[0]
+    return _ASPECT_RATIO_TO_DIMS.get(aspect, (1024, 576))[0]
 
 
 def _height_for_aspect(aspect: str) -> int:
-    return _ASPECT_RATIO_TO_DIMS.get(aspect, (1920, 1080))[1]
+    return _ASPECT_RATIO_TO_DIMS.get(aspect, (1024, 576))[1]
 
 
 __all__ = [

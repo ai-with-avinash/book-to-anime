@@ -71,9 +71,9 @@ _MIN_FIGURE_EDGE = 256
 
 @dataclass(frozen=True)
 class ImageRendererConfig:
-    width: int = 1920
-    height: int = 1080
-    steps: int = 28
+    width: int = 1024
+    height: int = 576
+    steps: int = 12
     guidance: float = 5.5
     concurrency: int = 2
     # Panel-style key shared with the visual provider's prompt-fragment map
