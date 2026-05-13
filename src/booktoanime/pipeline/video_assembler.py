@@ -348,12 +348,21 @@ class VideoAssembler:
         # Per-shot video pre-processing: scale + zoompan for Ken Burns. All
         # shots use static images as of phase 1 — the lip-sync mp4 branch
         # was removed when the project pivoted away from character narration.
+        # zoompan operates on integer pixel positions, so feeding it an image
+        # already at output resolution makes the per-frame x/y/zoom step land
+        # on the same pixel for many frames, producing visible jitter. Render
+        # the staging image at OVERSAMPLE x output, then let zoompan resample
+        # down to (width, height) — the larger input gives zoompan sub-pixel
+        # precision and the resulting pan/zoom is smooth.
+        oversample = 4
+        stage_w = width * oversample
+        stage_h = height * oversample
         for idx, shot in enumerate(storyboard.shots):
             apply_zoompan = True
 
             base_filter = (
-                f"[{idx}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
-                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,"
+                f"[{idx}:v]scale={stage_w}:{stage_h}:force_original_aspect_ratio=decrease:flags=lanczos,"
+                f"pad={stage_w}:{stage_h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,"
                 f"fps={fps}"
             )
 
@@ -375,6 +384,8 @@ class VideoAssembler:
                     f",zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':"
                     f"d={frames}:s={width}x{height}:fps={fps}"
                 )
+            else:
+                base_filter += f",scale={width}:{height}:flags=lanczos"
 
             video_filters.append(
                 base_filter
