@@ -32,45 +32,33 @@ from typing import Any, Protocol, runtime_checkable
 from PIL import Image
 
 from ...errors import ProviderError
+from ...pipeline.styles import STYLE_ANCHOR_BASE, STYLE_FRAGMENTS
 from ..base import GeneratedImage, ImageGenRequest, VisualProvider
 from ..registry import register_visual_provider
+
+# Module-private aliases preserve the legacy reference names used throughout
+# this file without exposing them as part of the public ``styles`` module API.
+_STYLE_FRAGMENTS = STYLE_FRAGMENTS
+_STYLE_ANCHOR_BASE = STYLE_ANCHOR_BASE
 
 _logger = logging.getLogger(__name__)
 
 # SDXL pipelines require dimensions divisible by 8.
 _DIM_MULTIPLE = 8
 
-# Anime-style prompt fragments. The user picks a style name in config; the
-# storyboard prompt is concatenated with the matching fragment so every shot
-# carries the same baseline aesthetic.
-_STYLE_FRAGMENTS: Mapping[str, str] = {
-    "shounen-bright": (
-        "shounen anime, bright saturated colors, clean line art, dynamic composition, "
-        "studio anime production, high detail"
-    ),
-    "shoujo-soft": (
-        "shoujo anime, soft pastel palette, sparkly highlights, gentle expressions, "
-        "watercolor-like backgrounds"
-    ),
-    "seinen-muted": (
-        "seinen anime, muted earthy palette, cinematic lighting, mature realistic "
-        "proportions, painterly textures"
-    ),
-    "chibi": (
-        "chibi anime, oversized heads, small bodies, cute exaggerated expressions, "
-        "playful flat shading"
-    ),
-}
+# Panel-style prompt fragments live in :mod:`pipeline.styles` so the storyboard
+# builder + style seeder + this provider all agree on the same mapping. We
+# import as ``_STYLE_FRAGMENTS`` to preserve the module-private reference name
+# the rest of this file uses.
 
 _NEGATIVE_PROMPT_BASELINE = (
     "low quality, blurry, distorted, watermark, text, signature, deformed hands, "
     "bad anatomy, jpeg artifacts"
 )
 
-_PERSONA_BASE_PROMPT = (
-    "anime narrator character portrait, single subject centered, "
-    "looking at camera, neutral background, full upper body framing"
-)
+# ``_STYLE_ANCHOR_BASE`` is imported from :mod:`pipeline.styles` above; the
+# legacy :meth:`SDXLDiffusersProvider.prepare` keeps it for the standalone
+# style-anchor render path (``StyleSeeder`` calls :meth:`render` directly).
 
 
 @dataclass(frozen=True)
@@ -112,6 +100,15 @@ class SDXLPipelineLike(Protocol):
         ...
 
     def set_ip_adapter_scale(self, scale: float) -> None:
+        ...
+
+    def load_ip_adapter(
+        self,
+        pretrained_model_name_or_path_or_dict: str,
+        *,
+        subfolder: str = ...,
+        weight_name: str = ...,
+    ) -> None:
         ...
 
 
@@ -167,29 +164,44 @@ class SDXLDiffusersProvider(VisualProvider):
         self._pipeline: SDXLPipelineLike | None = pipeline
         self._pipeline_factory = pipeline_factory
         self._pipeline_lock = asyncio.Lock()
+        # IP-Adapter is loaded lazily on the first render that supplies a
+        # reference image. The bootstrap STYLE_SEEDING render has no reference
+        # yet, so loading IP-Adapter at pipeline-build time would make
+        # text-only renders fail with `encoder_hid_dim_type='ip_image_proj'`
+        # requires `image_embeds`.
+        self._ip_adapter_loaded = False
+        self._ip_adapter_lock = asyncio.Lock()
+        # Serialize pipeline inference calls. Diffusers internally uses the
+        # HuggingFace fast tokenizer (Rust ``tokenizers``), which is not
+        # thread-safe across concurrent borrows. Even with split semaphores
+        # in the renderer, two SDXL shots running in parallel can hit the
+        # same tokenizer state and raise ``RuntimeError: Already borrowed``.
+        # GPU inference doesn't benefit from parallelism on a single device
+        # anyway — serializing is correct, not a regression.
+        self._render_call_lock = asyncio.Lock()
 
     # ------------------------------------------------------ VisualProvider API
 
-    async def prepare(self, *, anime_style: str, narrator_seed: int) -> Path:
-        """Generate (or load cached) narrator-persona reference image.
+    async def prepare(self, *, panel_style: str, narrator_seed: int) -> Path:
+        """Generate (or load cached) style-reference image.
 
-        Cache key: ``{anime_style}__{narrator_seed}.png``. Reusing the same
+        Cache key: ``{panel_style}__{narrator_seed}.png``. Reusing the same
         seed across the entire video gives the IP-Adapter a stable reference.
         """
 
         self._persona_dir.mkdir(parents=True, exist_ok=True)
-        cache_path = self._persona_dir / _persona_filename(anime_style, narrator_seed)
+        cache_path = self._persona_dir / _style_reference_filename(panel_style, narrator_seed)
         if cache_path.is_file():
             return cache_path
 
-        style_fragment = _STYLE_FRAGMENTS.get(anime_style)
+        style_fragment = _STYLE_FRAGMENTS.get(panel_style)
         if style_fragment is None:
             _logger.warning(
-                "unknown anime_style %r; using literal value as prompt fragment", anime_style
+                "unknown panel_style %r; using literal value as prompt fragment", panel_style
             )
-            style_fragment = anime_style
+            style_fragment = panel_style
 
-        prompt = f"{_PERSONA_BASE_PROMPT}, {style_fragment}"
+        prompt = f"{_STYLE_ANCHOR_BASE}, {style_fragment}"
         request = ImageGenRequest(
             prompt=prompt,
             negative_prompt=_NEGATIVE_PROMPT_BASELINE,
@@ -227,6 +239,8 @@ class SDXLDiffusersProvider(VisualProvider):
             raise ProviderError("image generation request has empty prompt")
 
         pipeline = await self._get_pipeline()
+        if persona_image is not None:
+            await self._ensure_ip_adapter_loaded(pipeline)
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         width = _round_to_multiple(request.width or self._default_width, _DIM_MULTIPLE)
@@ -247,7 +261,8 @@ class SDXLDiffusersProvider(VisualProvider):
         )
 
         try:
-            image = await asyncio.to_thread(_invoke_pipeline, pipeline, call_args)
+            async with self._render_call_lock:
+                image = await asyncio.to_thread(_invoke_pipeline, pipeline, call_args)
         except Exception as exc:
             raise ProviderError(f"SDXL render failed: {exc}") from exc
 
@@ -306,14 +321,34 @@ class SDXLDiffusersProvider(VisualProvider):
             self._checkpoint, torch_dtype=dtype
         ).to(device)
 
-        if self._ip_adapter_repo is not None:
-            pipeline.load_ip_adapter(
-                self._ip_adapter_repo,
-                subfolder=self._ip_adapter_subfolder,
-                weight_name=self._ip_adapter_weights,
-            )
+        # IP-Adapter is loaded lazily on first reference-bearing render
+        # (see _ensure_ip_adapter_loaded). Loading at build time would
+        # break text-only renders such as STYLE_SEEDING bootstrap.
 
         return pipeline  # type: ignore[no-any-return]
+
+    async def _ensure_ip_adapter_loaded(self, pipeline: SDXLPipelineLike) -> None:
+        """Load IP-Adapter weights once, on first render that supplies a reference."""
+        if self._ip_adapter_loaded or self._ip_adapter_repo is None:
+            return
+        async with self._ip_adapter_lock:
+            if self._ip_adapter_loaded:
+                return
+            repo = self._ip_adapter_repo
+            assert repo is not None  # guarded above
+
+            def _load() -> None:
+                pipeline.load_ip_adapter(
+                    repo,
+                    subfolder=self._ip_adapter_subfolder,
+                    weight_name=self._ip_adapter_weights,
+                )
+
+            try:
+                await asyncio.to_thread(_load)
+            except Exception as exc:
+                raise ProviderError(f"IP-Adapter load failed: {exc}") from exc
+            self._ip_adapter_loaded = True
 
 
 def _invoke_pipeline(pipeline: SDXLPipelineLike, args: _PipelineCallArgs) -> Image.Image:
@@ -321,6 +356,16 @@ def _invoke_pipeline(pipeline: SDXLPipelineLike, args: _PipelineCallArgs) -> Ima
 
     pipeline_device = _detect_pipeline_device(pipeline)
     generator = _make_generator(args.seed, device=pipeline_device)
+
+    call_kwargs: dict[str, Any] = dict(
+        prompt=args.prompt,
+        negative_prompt=args.negative_prompt,
+        width=args.width,
+        height=args.height,
+        num_inference_steps=args.steps,
+        guidance_scale=args.guidance,
+        generator=generator,
+    )
 
     if args.ip_adapter_image is not None:
         # Apply IP-Adapter scale just-in-time per shot so different shots can
@@ -330,17 +375,9 @@ def _invoke_pipeline(pipeline: SDXLPipelineLike, args: _PipelineCallArgs) -> Ima
         # CUDA, or memory errors so they propagate.
         with contextlib.suppress(AttributeError, RuntimeError):
             pipeline.set_ip_adapter_scale(args.ip_adapter_scale)
+        call_kwargs["ip_adapter_image"] = args.ip_adapter_image
 
-    output = pipeline(
-        prompt=args.prompt,
-        negative_prompt=args.negative_prompt,
-        width=args.width,
-        height=args.height,
-        num_inference_steps=args.steps,
-        guidance_scale=args.guidance,
-        generator=generator,
-        ip_adapter_image=args.ip_adapter_image,
-    )
+    output = pipeline(**call_kwargs)
 
     images = getattr(output, "images", None)
     if not images:
@@ -402,8 +439,8 @@ def _round_to_multiple(value: int, multiple: int) -> int:
 _FILENAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
-def _persona_filename(anime_style: str, narrator_seed: int) -> str:
-    safe = _FILENAME_SAFE.sub("_", anime_style.strip()) or "style"
+def _style_reference_filename(panel_style: str, narrator_seed: int) -> str:
+    safe = _FILENAME_SAFE.sub("_", panel_style.strip()) or "style"
     return f"{safe}__{narrator_seed}.png"
 
 

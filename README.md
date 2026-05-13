@@ -1,6 +1,7 @@
-# BookToAnime
+# StudyPanels
 
-Convert a PDF book into an anime-style narrated MP4 explainer video, locally.
+**PDF → STEM motion-comic study explainer.** Convert a PDF (textbook chapter,
+lecture notes, paper) into a narrated motion-comic study video, locally.
 Open-source under Apache-2.0. No proprietary runtime required, no telemetry,
 all artifacts live in your own data directory.
 
@@ -8,30 +9,48 @@ all artifacts live in your own data directory.
 $ booktoanime           # opens http://127.0.0.1:8765 in your browser
 ```
 
-Pluggable across language, audio, and visual providers — pick a hosted LLM
-(Anthropic, OpenAI, Gemini, Groq, Together, Fireworks, DeepSeek, Mistral) or
-run fully local against any OpenAI-compatible endpoint (Ollama, vLLM, LM
-Studio, llama.cpp). Default install is small; heavy ML deps (torch,
+Pluggable across language, audio, and visual providers. The default recommended
+path is **fully local** against any OpenAI-compatible endpoint (Ollama, vLLM,
+LM Studio, llama.cpp) — zero per-book cost, zero data leaving your machine.
+Hosted LLMs (Anthropic, OpenAI-class, Gemini, Groq, DeepSeek) are available as
+an optional fallback. Default install is small; heavy ML deps (torch,
 diffusers) live behind opt-in install extras.
 
-> **Status:** v0.0.1 — pipeline end-to-end runs in tests; large-PDF + GPU
-> tuning still in progress. See [Roadmap](#roadmap).
+> **Status:** v0.1.0 — StudyPanels pivot (rename + strip). Phase 2 (figure-first
+> rendering + style anchor) lands next. See [Roadmap](#roadmap).
 
 ---
 
-## Three recommended starter paths
+## Recommended starter paths
 
 | Path | Provider | Rough per-book LLM cost\* |
 |---|---|---|
-| Cheap-and-fast hosted | Groq Llama-3.3 70B *or* Gemini 2.5 Flash | $0.05 – $0.50 |
-| Best-quality hosted   | Claude Sonnet 4.6 *or* GPT-4o-class       | $2 – $8 |
-| Fully local           | Ollama / vLLM via OpenAI-compatible       | $0 |
+| **Fully local (recommended)** | Local Ollama via `openai_compatible` (Llama 3.1 8B / Qwen / etc.) | $0 |
+| Optional fallback — cheap hosted | Groq Llama 3.3 70B *or* Gemini 2.5 Flash | $0.05 – $0.50 |
+| Optional fallback — best-quality hosted | Claude Sonnet *or* GPT-4o-class | $2 – $8 |
 
 \* TTS and image generation costs are independent. The default Kokoro TTS
 and SDXL image stack are free to run locally on CPU or modest GPU. Hosted
 LLM costs vary with PDF length, depth setting, and shot count.
 
 See [`docs/costs.md`](docs/costs.md) for a fuller breakdown.
+
+### Panel styles
+
+Each job renders SDXL fallback shots in one of four panel styles. The
+style fragment is also baked into a per-job IP-Adapter anchor (the
+`STYLE_SEEDING` stage) so every illustration in the same job hews to a
+single visual tone.
+
+| Key | Look |
+|---|---|
+| `clean-linework` | Minimal-palette line art with a technical-diagram aesthetic. Default; the most neutral choice for STEM content. |
+| `chalkboard-sketch` | White chalk on a dark green chalkboard. Hand-drawn classroom vibe. |
+| `watercolor-technical` | Muted earth palette over a light pencil outline — hand-painted scientific illustration. |
+| `flat-vector-infographic` | Bold geometric shapes, four-color limited palette, modern educational infographic. |
+
+Real PDF figures (the `FIGURE` shot kind) bypass SDXL entirely and are
+composited as comic panels in phase 3.
 
 ---
 
@@ -41,19 +60,24 @@ See [`docs/costs.md`](docs/costs.md) for a fuller breakdown.
 # 1. Install (small default; native SDKs + ML stack are extras)
 pipx install booktoanime
 
-# 2. Put your provider keys in a config.yaml (use config.example.yaml as a base)
+# 2. Put your provider config in config.yaml (use config.example.yaml as a base)
 cp config.example.yaml config.yaml
-export GROQ_API_KEY=...        # whichever provider you picked
 
 # 3. System binaries (one-time)
 #    macOS:    brew install ffmpeg tesseract
 #    Ubuntu:   sudo apt install ffmpeg tesseract-ocr
 
-# 4. Run
+# 4. (Recommended) install Ollama and pull a model
+#    https://ollama.com — then: `ollama pull llama3.1:8b`
+
+# 5. Verify the free stack is ready
+booktoanime check
+
+# 6. Run
 booktoanime                     # starts the local server, opens browser
 ```
 
-Upload a PDF, pick the anime style + narration voice + depth + length, hit
+Upload a PDF, pick the panel style + narration voice + depth + length, hit
 **Generate**. Progress streams live to the browser via Server-Sent Events.
 On failure, hit **Resume** to pick up at the last completed stage.
 
@@ -67,8 +91,8 @@ pip install "booktoanime[kokoro]"           # local TTS (pulls torch)
 pip install "booktoanime[visual]"           # SDXL + IP-Adapter (pulls torch + diffusers)
 ```
 
-The `openai_compatible`, `groq`, `together`, `fireworks`, `mistral`, and
-`deepseek` adapters use raw HTTP (no SDK), so they work on the default install.
+The `openai_compatible`, `groq`, and `deepseek` adapters use raw HTTP (no
+SDK), so they work on the default install.
 
 ---
 
@@ -80,16 +104,24 @@ booktoanime [OPTIONS] COMMAND [ARGS]
 Commands:
   run       Start the local FastAPI server and open a browser tab.
   resume    Re-run a previously failed/cancelled job from its last completed stage.
+  check     Probe the free-stack dependencies (Ollama, Kokoro, ffmpeg, tesseract).
   version   Print the package version.
 
 Options:
   --data-dir PATH    Override job/state directory (default: platformdirs user_data_dir).
   --config, -c PATH  Path to config.yaml (default: ./config.yaml).
+  --env-file PATH    Path to a .env file (default: ./.env).
 ```
 
-`booktoanime run` is the default; you usually just type `booktoanime`.
+`booktoanime run` is the default; you usually just type `booktoanime`. The
+preflight probes run automatically inside `run` unless you pass
+`--skip-preflight`.
 
 `BOOKTOANIME_DATA_DIR=/some/path` overrides `--data-dir` system-wide.
+
+> The console script is still named `booktoanime` for this release. The binary
+> rename to `studypanels` is queued for v0.2 to avoid breaking entry-point
+> consumers.
 
 ---
 
@@ -105,14 +137,13 @@ Each stage writes a versioned artifact to disk under
 ```
 jobs/<job_id>/
 ├── source.pdf
-├── manifest.json            # job state + per-stage status
+├── manifest.json            # job state + per-stage status (schema v2)
 ├── extracted/parsed.json    # parsed text + tables + image refs (parsing)
 ├── extracted/img_*.png      # raw images extracted from the PDF
 ├── structured.json          # depth-aware topic summaries (structuring)
 ├── storyboard.json          # per-shot narration + prompts (storyboard)
 ├── images/shot_*.png + index.json
 ├── audio/shot_*.wav + index.json
-├── personas/<style>__<seed>.png   # IP-Adapter narrator reference
 ├── output.mp4
 ├── output.srt
 ├── events.log               # NDJSON of every progress event (SSE source of truth)
@@ -215,7 +246,12 @@ fallback semantics, cancellation handling).
   the API.
 
 Hard failures: encrypted PDFs, corrupted PDFs, image-only PDFs with OCR
-disabled. Each surfaces a distinct typed error with a clear next step.
+disabled, manifest schema mismatch (v0.0.x → v0.1.0). Each surfaces a
+distinct typed error with a clear next step.
+
+**Upgrading from v0.0.x?** The manifest schema bumped from v1 to v2. Back up
+or move `<data_dir>/jobs/` before running v0.1.0 — there is no in-place
+migration in this release. See `CHANGELOG.md` for the exact command.
 
 ---
 
@@ -228,7 +264,6 @@ docker run --rm -it \
   -v "$HOME/booktoanime-data":/data \
   -v "$PWD/config.yaml":/config.yaml \
   -e BOOKTOANIME_DATA_DIR=/data \
-  -e GROQ_API_KEY="$GROQ_API_KEY" \
   booktoanime --config /config.yaml run --host 0.0.0.0 --no-open-browser
 ```
 
@@ -243,9 +278,6 @@ the NVIDIA Container Toolkit and the `[visual]` extra.
 * Default runtime dependencies: all permissively licensed (MIT / BSD /
   Apache-2.0). PyMuPDF (AGPL) is **explicitly excluded**; pull requests
   introducing copyleft runtime deps will not be accepted.
-* Source-available / non-commercial models (XTTS-v2, FLUX.1 dev) are
-  referenced as **opt-in** providers only. The user installs them and
-  accepts the upstream license.
 * The user is responsible for the content they process. v1 ships with
   no content moderation by design — you run this locally on your own
   files.
@@ -265,9 +297,9 @@ python -m venv .venv
 source .venv/bin/activate
 uv pip install -e ".[dev]"
 
-pytest                # 115 tests, fully mocked, no network
+pytest                # fully mocked, no network
 ruff check src tests
-mypy src
+mypy --strict src
 ```
 
 Add a `.env` or export your provider keys before running `booktoanime` for a
@@ -277,12 +309,20 @@ real end-to-end check.
 
 ## Roadmap
 
-* Image-to-video stage under `--profile high-quality` (Wan 2.1)
+* Phase 2: figure-first rendering — real extracted figures rendered as comic
+  panels via Pillow, SDXL only as fallback for illustration shots.
+* Phase 3: STYLE_SEEDING + IP-Adapter style anchor for consistent SDXL
+  fallback look across a job.
+* `studypanels` console script alias in v0.2 (current binary stays
+  `booktoanime` to avoid breaking entry-point consumers).
+* Mouth-animation / lip-sync stage (Replicate-hosted SadTalker or local)
+  re-introduction — provider abstraction landed previously, but the
+  stage module + orchestrator handler were removed; revival pending
+  product decision on cost/latency trade-off.
 * Multilingual narration: ship voice presets for non-English Kokoro
-  packs once upstream stabilizes
-* Per-image bbox-based caption hint matching (currently page-level)
-* Wider table support (image overlay rendering for narration)
-* `booktoanime models download` pre-fetch command
+  packs once upstream stabilizes.
+* Per-image bbox-based caption hint matching (currently page-level).
+* `booktoanime models download` pre-fetch command.
 
 ---
 

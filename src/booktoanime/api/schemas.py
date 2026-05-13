@@ -36,7 +36,7 @@ class CreateJobRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    anime_style: str = "shounen-bright"
+    panel_style: str = "clean-linework"
     voice_id: str
     language: str = "en-US"
     speed: float = 1.0
@@ -48,7 +48,7 @@ class CreateJobRequest(BaseModel):
 
     def to_job_config(self, providers: ProvidersConfig) -> JobConfig:
         return JobConfig(
-            anime_style=self.anime_style,
+            panel_style=self.panel_style,
             narration=NarrationConfig(
                 voice_id=self.voice_id,
                 language=self.language,

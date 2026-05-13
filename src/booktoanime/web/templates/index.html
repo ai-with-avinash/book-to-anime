@@ -1,6 +1,6 @@
 {% extends "_layout.html" %}
 
-{% block title %}BookToAnime — New job{% endblock %}
+{% block title %}StudyPanels — New job{% endblock %}
 
 {% block content %}
 <section class="card">
@@ -30,12 +30,12 @@
 
     <div class="grid">
       <label>
-        Anime style
-        <select name="anime_style">
-          <option value="shounen-bright">Shounen-bright</option>
-          <option value="shoujo-soft">Shoujo-soft</option>
-          <option value="seinen-muted">Seinen-muted</option>
-          <option value="chibi">Chibi</option>
+        Panel style
+        <select name="panel_style">
+          <option value="clean-linework">Clean line-work</option>
+          <option value="chalkboard-sketch">Chalkboard sketch</option>
+          <option value="watercolor-technical">Watercolor technical</option>
+          <option value="flat-vector-infographic">Flat vector infographic</option>
         </select>
       </label>
 
@@ -90,11 +90,6 @@
         </select>
       </label>
     </div>
-
-    <label class="checkbox">
-      <input type="checkbox" name="lipsync_enabled" value="true" />
-      Animate narrator's mouth (slower; needs GPU or Replicate API key)
-    </label>
 
     <button type="submit" :disabled="submitting">
       <span x-show="!submitting">Generate</span>

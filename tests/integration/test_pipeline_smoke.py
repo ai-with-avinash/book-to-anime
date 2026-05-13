@@ -98,9 +98,9 @@ class _FakeVisual(VisualProvider):
         self._fail_after = fail_after
         self.render_count = 0
 
-    async def prepare(self, *, anime_style: str, narrator_seed: int) -> Path:
+    async def prepare(self, *, panel_style: str, narrator_seed: int) -> Path:
         self._persona_dir.mkdir(parents=True, exist_ok=True)
-        path = self._persona_dir / f"{anime_style}__{narrator_seed}.png"
+        path = self._persona_dir / f"{panel_style}__{narrator_seed}.png"
         if not path.is_file():
             Image.new("RGB", (64, 64), (10, 30, 60)).save(path)
         return path
@@ -127,7 +127,7 @@ class _FakeVisual(VisualProvider):
 
 def _build_manifest(*, job_id: str, source_pdf: str = "source.pdf") -> JobManifest:
     config = JobConfig(
-        anime_style="shounen-bright",
+        panel_style="clean-linework",
         narration=NarrationConfig(voice_id="fake_voice", language="en-US"),
         depth="undergraduate",
         length_preset="short",
@@ -200,7 +200,15 @@ async def test_orchestrator_runs_to_completion(
     orchestrator = PipelineOrchestrator(deps)
     final_manifest = await orchestrator.run(job_dir=job_dir)
 
-    for stage in ("parsing", "structuring", "storyboard", "images", "audio", "assembly"):
+    for stage in (
+        "parsing",
+        "structuring",
+        "style_seeding",
+        "storyboard",
+        "images",
+        "audio",
+        "assembly",
+    ):
         assert final_manifest.stages[stage].status.value == "completed", stage
     # Assembly produced the final outputs.
     assert (job_dir / "output.mp4").is_file()
@@ -210,7 +218,6 @@ async def test_orchestrator_runs_to_completion(
     assert (job_dir / "extracted" / "parsed.json").is_file()
     structured = StructuredDocument.from_path(job_dir / "structured.json")
     assert structured.topics, "expected at least one topic"
-    assert structured.narrator_persona.reference_image is not None
 
     storyboard = Storyboard.from_path(job_dir / "storyboard.json")
     assert storyboard.shots, "expected at least one shot"
@@ -240,8 +247,8 @@ async def test_orchestrator_runs_to_completion(
     }
     assert {"parsing", "structuring", "storyboard", "images", "audio"}.issubset(completed_stages)
 
-    # Caller didn't touch the visual provider's render() unnecessarily.
-    assert visual.render_count == len(storyboard.shots)
+    # render() runs once per shot PLUS once for the style-seeder anchor.
+    assert visual.render_count == len(storyboard.shots) + 1
     assert audio.calls == len(storyboard.shots)
     assert language.complete_calls == len(structured.topics)
 
@@ -270,8 +277,10 @@ async def test_orchestrator_resumes_after_image_failure(
 
     persona_dir = tmp_path / "personas"
 
-    # First run fails after one successful render.
-    failing_visual = _FakeVisual(persona_dir=persona_dir, fail_after=1)
+    # First run fails after two successful renders. The first render is the
+    # style-seeder anchor (STYLE_SEEDING stage); the second is the first
+    # storyboard shot. The third call (second image shot) raises.
+    failing_visual = _FakeVisual(persona_dir=persona_dir, fail_after=2)
     deps_a, bus_a, _, _, _ = _build_deps(
         job_dir=job_dir, persona_dir=persona_dir, repo=repo, visual=failing_visual
     )
@@ -290,8 +299,12 @@ async def test_orchestrator_resumes_after_image_failure(
 
     partial_index = ImagesIndex.from_path(job_dir / "images" / "index.json")
     assert len(partial_index.items) == 1
+    # render_count counts every successful provider.render() call across both
+    # stages; the style anchor is one of them.
     rendered_so_far = failing_visual.render_count
-    assert rendered_so_far == 1
+    assert rendered_so_far == 2
+    image_renders_so_far = len(partial_index.items)
+    assert image_renders_so_far == 1
 
     db_record = repo.get(manifest.job_id)
     assert db_record is not None
@@ -309,7 +322,9 @@ async def test_orchestrator_resumes_after_image_failure(
 
     storyboard = Storyboard.from_path(job_dir / "storyboard.json")
     expected_total = len(storyboard.shots)
-    assert successful_visual.render_count == expected_total - rendered_so_far
+    # Style anchor was already written by the failing run; the resumed visual
+    # only needs to render the image-stage shots that hadn't completed.
+    assert successful_visual.render_count == expected_total - image_renders_so_far
 
     final_index = ImagesIndex.from_path(job_dir / "images" / "index.json")
     assert len(final_index.items) == expected_total

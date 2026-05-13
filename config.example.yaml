@@ -1,4 +1,4 @@
-# BookToAnime — example configuration.
+# StudyPanels — example configuration.
 #
 # Copy this file to `config.yaml` (in the working directory you run
 # `booktoanime` from) and uncomment exactly one block under each of the
@@ -20,7 +20,12 @@ data_dir: ~/.local/share/booktoanime
 profile: default
 
 defaults:
-  anime_style: shounen-bright             # shounen-bright | shoujo-soft | seinen-muted | chibi
+  # panel_style choices:
+  #   clean-linework          — minimal-palette line art, technical-diagram look
+  #   chalkboard-sketch       — white chalk on dark green, classroom aesthetic
+  #   watercolor-technical    — muted earth palette, hand-painted scientific drawing
+  #   flat-vector-infographic — bold geometric shapes, modern infographic style
+  panel_style: clean-linework
   depth: undergraduate                    # eli5 | undergraduate | expert
   length_preset: standard                 # short | standard | in_depth
   aspect_ratio: "16:9"                    # 16:9 | 9:16 | 1:1
@@ -37,7 +42,21 @@ defaults:
 language:
   active: openai_compatible
 
-  # ── Cheap-and-fast hosted (recommended starter) ──────────────────────────
+  # ── Local (recommended — free, no API key) ────────────────────────────────
+  openai_compatible:
+    # Default points at Ollama. Switch base_url to any OpenAI-compatible
+    # /v1/chat/completions endpoint (vLLM, LM Studio, llama.cpp server).
+    base_url: http://localhost:11434/v1
+    model: llama3.1:8b
+    api_key_env: OPENAI_API_KEY            # ignored by Ollama; still required by some clients
+    request_timeout_s: 60
+    # base_url: https://api.openai.com/v1  # optional fallback to hosted OpenAI
+    # base_url: http://localhost:8000/v1   # vLLM
+    # base_url: http://localhost:1234/v1   # LM Studio
+    # base_url: http://localhost:8080/v1   # llama.cpp server
+    # vision: true                         # set when the local model is multimodal
+
+  # ── Optional hosted fallbacks ────────────────────────────────────────────
   groq:
     model: llama-3.3-70b-versatile
     api_key_env: GROQ_API_KEY
@@ -47,41 +66,13 @@ language:
     model: gemini-2.5-flash
     api_key_env: GEMINI_API_KEY
 
-  # ── Best-quality hosted ──────────────────────────────────────────────────
   anthropic:
     model: claude-sonnet-4-6
     api_key_env: ANTHROPIC_API_KEY
 
-  openai_compatible:
-    # Default = OpenAI itself. Comment the base_url line out and pick one
-    # of the local examples below to point at a self-hosted endpoint.
-    base_url: https://api.openai.com/v1
-    model: gpt-4o-mini
-    api_key_env: OPENAI_API_KEY
-    request_timeout_s: 60
-    # Local options (any OpenAI-compatible /v1/chat/completions endpoint):
-    # base_url: http://localhost:11434/v1   # Ollama
-    # base_url: http://localhost:8000/v1    # vLLM
-    # base_url: http://localhost:1234/v1    # LM Studio
-    # base_url: http://localhost:8080/v1    # llama.cpp server
-    # vision: true                          # set when the local model is multimodal
-
-  # ── Other hosted options ─────────────────────────────────────────────────
-  together:
-    model: meta-llama/Llama-3.3-70B-Instruct-Turbo
-    api_key_env: TOGETHER_API_KEY
-
-  fireworks:
-    model: accounts/fireworks/models/llama-v3p3-70b-instruct
-    api_key_env: FIREWORKS_API_KEY
-
   deepseek:
     model: deepseek-chat
     api_key_env: DEEPSEEK_API_KEY
-
-  mistral:
-    model: mistral-large-latest
-    api_key_env: MISTRAL_API_KEY
 
   # Optional: a separate vision-capable provider used only when the active
   # provider lacks vision (raises CapabilityNotSupportedError). Name must
@@ -96,11 +87,6 @@ audio:
     voice_id: af_bella
     language: en-US
     sample_rate: 24000
-
-  # Opt-in, non-commercial — install separately and accept upstream license.
-  # xtts:
-  #   voice_id: xtts_v2_default
-  #   accepted_license: false
 
 # ---------------------------------------------------------------- VISUAL
 
@@ -122,43 +108,6 @@ visual:
   # animagine_xl: { ... }
   # illustrious:  { ... }
   # flux_dev:     { accepted_license: false }   # non-commercial
-
-# ---------------------------------------------------------------- LIPSYNC
-
-# Mouth-animation stage. Off by default — when `enabled: false` the pipeline
-# treats the persona PNG as a static narrator (the existing fast path).
-# Turning this on inserts a per-shot lip-sync render between the audio and
-# assembly stages. Heavy: SadTalker locally needs CUDA/MPS + ~1 GB checkpoint
-# downloads on first use; the Replicate adapter sends each shot to a hosted
-# endpoint instead.
-lipsync:
-  enabled: false
-  active: passthrough        # passthrough | sadtalker_local | replicate
-  preserve_ken_burns: false  # set true to keep camera zoom on top of mouth motion
-
-  passthrough:
-    fps: 30                  # no-op stub: writes one mp4 per shot from the static PNG
-                             # (kept in the pipeline so VideoAssembler stays uniform)
-
-  sadtalker_local:
-    # Requires `pip install booktoanime[lipsync]` plus SadTalker's checkpoints.
-    # Set checkpoints_dir if you've pre-downloaded them; otherwise the CLI
-    # downloads on first run.
-    # cli_binary: /opt/homebrew/bin/sadtalker
-    # checkpoints_dir: ~/.local/share/booktoanime/models/sadtalker
-    device: cuda             # cuda | cpu (mps support is partial — fall back to replicate)
-    still_mode: true
-    preprocess: full
-    fps: 25
-
-  replicate:
-    # Hosted SadTalker. Best for Macs / no-GPU machines. ~$0.10 per book.
-    api_key_env: REPLICATE_API_TOKEN
-    model: cjwbw/sadtalker
-    # version: <pin a version hash here for reproducibility>
-    request_timeout_s: 60
-    still_mode: true
-    preprocess: full
 
 # ---------------------------------------------------------------- SERVER
 

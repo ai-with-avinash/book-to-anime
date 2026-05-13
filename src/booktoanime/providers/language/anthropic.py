@@ -186,7 +186,7 @@ def _translate_anthropic_exception(exc: Exception) -> Exception:
         return ProviderAuthError(str(exc))
     if isinstance(exc, RateLimitError):
         return ProviderRateLimitError(str(exc))
-    if isinstance(exc, (APIConnectionError, APITimeoutError)):
+    if isinstance(exc, APIConnectionError | APITimeoutError):
         return ProviderTransientError(str(exc))
     if isinstance(exc, APIStatusError) and 500 <= exc.status_code < 600:
         return ProviderTransientError(str(exc))

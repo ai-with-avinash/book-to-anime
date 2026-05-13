@@ -1,25 +1,31 @@
 """Top-level Typer CLI.
 
-``booktoanime`` runs the FastAPI server. ``booktoanime resume <job_id>`` re-
-runs a failed job from the last completed stage. ``booktoanime version``
-prints the package version.
+``booktoanime run`` starts the FastAPI server. ``booktoanime resume <job_id>``
+re-runs a failed job from the last completed stage. ``booktoanime check``
+probes the free-stack dependencies (Ollama, Kokoro weights, ffmpeg, tesseract)
+and exits non-zero on any missing piece. ``booktoanime version`` prints the
+package version.
 """
 
 from __future__ import annotations
 
 import asyncio
+import shutil
 import sys
 import threading
 import webbrowser
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any
 
+import httpx
 import typer
 import uvicorn
 import yaml
 from platformdirs import user_data_dir
 from rich.console import Console
+from rich.table import Table
 
 from . import __version__
 from ._dotenv import load_dotenv
@@ -31,7 +37,7 @@ _console = Console()
 
 app = typer.Typer(
     add_completion=False,
-    help="Convert a PDF book into an anime-style narrated explainer video.",
+    help="Convert a PDF into a STEM motion-comic narrated explainer video.",
 )
 
 
@@ -92,14 +98,188 @@ def _print_first_run_hint() -> None:
     _console.print(
         "[bold red]No language / audio / visual provider configured.[/bold red]\n"
         "Create a [bold]config.yaml[/bold] in the working directory or pass --config.\n\n"
-        "Recommended starter paths (rough per-book hosted-API costs):\n"
+        "Recommended free-stack path (zero per-book cost):\n"
+        "  * [bold]Ollama Llama 3.1 8B[/bold] + Kokoro TTS + local SDXL\n\n"
+        "Optional hosted fallbacks (rough per-book costs):\n"
         "  * [bold]Groq Llama 3.3 70B[/bold]: ~$0.05-$0.30 per book\n"
         "  * [bold]Gemini Flash[/bold]: ~$0.10-$0.50 per book\n"
-        "  * [bold]Claude Sonnet[/bold]: ~$2-$8 per book\n"
-        "  * [bold]GPT-4o-mini[/bold]: ~$0.50-$2 per book\n"
-        "  * [bold]Local (Ollama / vLLM via OpenAI-compatible)[/bold]: $0 per book\n\n"
+        "  * [bold]Claude Sonnet[/bold]: ~$2-$8 per book\n\n"
         "See `config.example.yaml` in the repository for the full schema."
     )
+
+
+# --------------------------------------------------------- preflight (check)
+
+
+@dataclass(frozen=True)
+class _ProbeResult:
+    name: str
+    ok: bool
+    detail: str
+
+
+def _probe_ollama(config: Mapping[str, Any]) -> _ProbeResult:
+    """Reach Ollama's /api/tags and assert the configured model is present.
+
+    Honors ``OLLAMA_HOST`` (defaults to ``http://localhost:11434``). When the
+    active language provider isn't ``openai_compatible`` or its base_url isn't
+    Ollama, we just probe reachability and skip the model assertion.
+    """
+
+    import os
+
+    host = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+    url = f"{host}/api/tags"
+    expected_model: str | None = None
+    language = config.get("language") if isinstance(config, Mapping) else None
+    if isinstance(language, Mapping):
+        active = str(language.get("active", ""))
+        sub = language.get(active) if active else None
+        if isinstance(sub, Mapping):
+            base_url = str(sub.get("base_url", ""))
+            if "11434" in base_url or "ollama" in base_url.lower():
+                model = sub.get("model")
+                if isinstance(model, str):
+                    expected_model = model
+
+    try:
+        response = httpx.get(url, timeout=2.0)
+    except httpx.HTTPError as exc:
+        return _ProbeResult(
+            name="ollama",
+            ok=False,
+            detail=f"unreachable at {url} ({exc.__class__.__name__})",
+        )
+
+    if response.status_code != 200:
+        return _ProbeResult(
+            name="ollama",
+            ok=False,
+            detail=f"{url} returned HTTP {response.status_code}",
+        )
+
+    if expected_model is None:
+        return _ProbeResult(
+            name="ollama",
+            ok=True,
+            detail=(
+                "reachable; no Ollama-shaped language provider in config "
+                "(skipping model check)"
+            ),
+        )
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return _ProbeResult(
+            name="ollama",
+            ok=False,
+            detail=f"{url} returned non-JSON body",
+        )
+
+    models = payload.get("models") if isinstance(payload, dict) else None
+    available = {
+        str(item.get("name"))
+        for item in (models or [])
+        if isinstance(item, Mapping) and item.get("name")
+    }
+    # Ollama tags include the ":tag" suffix; tolerate both with-tag and bare names.
+    expected_bare = expected_model.split(":", 1)[0]
+    matched = any(
+        name == expected_model or name.split(":", 1)[0] == expected_bare for name in available
+    )
+    if not matched:
+        return _ProbeResult(
+            name="ollama",
+            ok=False,
+            detail=(
+                f"model {expected_model!r} not pulled. Run "
+                f"`ollama pull {expected_model}`."
+            ),
+        )
+    return _ProbeResult(
+        name="ollama",
+        ok=True,
+        detail=f"reachable; model {expected_model!r} present",
+    )
+
+
+def _probe_kokoro(data_dir: Path) -> _ProbeResult:
+    """Best-effort Kokoro weights presence check.
+
+    Kokoro's `kokoro` package caches under huggingface's default cache
+    (``~/.cache/huggingface``) or a project-specific location. We treat
+    presence of either ``<data_dir>/models/kokoro/`` *or* a huggingface
+    cache entry for ``hexgrad/Kokoro-82M`` as proof. Failing both, the
+    user is told how to prefetch.
+    """
+
+    project_cache = data_dir / "models" / "kokoro"
+    if project_cache.is_dir() and any(project_cache.iterdir()):
+        return _ProbeResult(
+            name="kokoro",
+            ok=True,
+            detail=f"weights cached at {project_cache}",
+        )
+
+    home = Path.home()
+    candidates = (
+        home / ".cache" / "huggingface" / "hub" / "models--hexgrad--Kokoro-82M",
+        home / ".cache" / "huggingface" / "models--hexgrad--Kokoro-82M",
+    )
+    for candidate in candidates:
+        if candidate.is_dir():
+            return _ProbeResult(
+                name="kokoro",
+                ok=True,
+                detail=f"weights cached at {candidate}",
+            )
+
+    return _ProbeResult(
+        name="kokoro",
+        ok=False,
+        detail=(
+            f"no Kokoro weights found under {project_cache} or "
+            f"{home / '.cache' / 'huggingface'}. They auto-download on first "
+            f"run; install with `pip install \"booktoanime[kokoro]\"` if "
+            f"missing."
+        ),
+    )
+
+
+def _probe_binary(binary: str) -> _ProbeResult:
+    resolved = shutil.which(binary)
+    if resolved is None:
+        return _ProbeResult(
+            name=binary,
+            ok=False,
+            detail=f"{binary} not on PATH",
+        )
+    return _ProbeResult(
+        name=binary,
+        ok=True,
+        detail=f"found at {resolved}",
+    )
+
+
+def _run_preflight(config: Mapping[str, Any], data_dir: Path) -> list[_ProbeResult]:
+    return [
+        _probe_ollama(config),
+        _probe_kokoro(data_dir),
+        _probe_binary("ffmpeg"),
+        _probe_binary("tesseract"),
+    ]
+
+
+def _render_preflight_table(results: list[_ProbeResult]) -> None:
+    table = Table(title="Preflight checks", show_lines=False)
+    table.add_column("Dependency", style="bold")
+    table.add_column("Status")
+    table.add_column("Detail", style="dim")
+    for result in results:
+        status_text = "[green]OK[/green]" if result.ok else "[red]FAIL[/red]"
+        table.add_row(result.name, status_text, result.detail)
+    _console.print(table)
 
 
 # --------------------------------------------------------------------------- run
@@ -145,9 +325,27 @@ def run(
     host: str = "127.0.0.1",
     port: int = 8765,
     open_browser: bool = True,
+    skip_preflight: Annotated[
+        bool,
+        typer.Option(
+            "--skip-preflight",
+            help="Skip the dependency probes (Ollama, Kokoro, ffmpeg, tesseract).",
+        ),
+    ] = False,
 ) -> None:
     config = _load_yaml_config(ctx.obj["config_path"])
     settings = _build_settings(config, ctx.obj["data_dir"])
+
+    if not skip_preflight:
+        results = _run_preflight(config, ctx.obj["data_dir"])
+        _render_preflight_table(results)
+        if any(not r.ok for r in results):
+            _console.print(
+                "[bold red]Preflight failed.[/bold red] Fix the items above "
+                "or pass [bold]--skip-preflight[/bold] to bypass."
+            )
+            raise typer.Exit(code=1)
+
     fastapi_app = create_app(settings)
 
     if open_browser:
@@ -191,7 +389,8 @@ def resume(
     )
 
     async def _run() -> None:
-        # Touch the manifest just to fail fast on a corrupt one before launch.
+        # Touch the manifest just to fail fast on a corrupt or stale-schema
+        # one before launch.
         JobManifest.from_path(manifest_path)
         running = runner.start(job_id=job_id)
         try:
@@ -203,6 +402,16 @@ def resume(
             await runner.shutdown()
 
     asyncio.run(_run())
+
+
+@app.command(help="Probe the free-stack dependencies and exit non-zero on any failure.")
+def check(ctx: typer.Context) -> None:
+    config = _load_yaml_config(ctx.obj["config_path"])
+    data_dir: Path = ctx.obj["data_dir"]
+    results = _run_preflight(config, data_dir)
+    _render_preflight_table(results)
+    if any(not r.ok for r in results):
+        raise typer.Exit(code=1)
 
 
 @app.command(help="Print the package version and exit.")

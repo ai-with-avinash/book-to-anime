@@ -71,9 +71,9 @@ class _FakeVisual(VisualProvider):
     def __init__(self, persona_dir: Path) -> None:
         self._persona_dir = persona_dir
 
-    async def prepare(self, *, anime_style: str, narrator_seed: int) -> Path:
+    async def prepare(self, *, panel_style: str, narrator_seed: int) -> Path:
         self._persona_dir.mkdir(parents=True, exist_ok=True)
-        path = self._persona_dir / f"{anime_style}__{narrator_seed}.png"
+        path = self._persona_dir / f"{panel_style}__{narrator_seed}.png"
         if not path.is_file():
             Image.new("RGB", (32, 32), (10, 30, 60)).save(path)
         return path
@@ -138,7 +138,7 @@ def test_index_renders_html(app_client: tuple[TestClient, Path]) -> None:
     client, _ = app_client
     response = client.get("/")
     assert response.status_code == 200
-    assert "BookToAnime" in response.text
+    assert "StudyPanels" in response.text
     assert "Upload a PDF" in response.text
 
 
@@ -191,7 +191,15 @@ def test_full_run_completes_via_api(
         pytest.fail("job never completed")
 
     assert status_body["status"] == "completed", status_body
-    for stage in ("parsing", "structuring", "storyboard", "images", "audio", "assembly"):
+    for stage in (
+        "parsing",
+        "structuring",
+        "style_seeding",
+        "storyboard",
+        "images",
+        "audio",
+        "assembly",
+    ):
         assert status_body["stages"][stage] == "completed", stage
 
     job_dir = data_dir / "jobs" / job_id
@@ -202,10 +210,11 @@ def test_full_run_completes_via_api(
     # Assembly artifacts.
     assert (job_dir / "output.mp4").is_file()
     assert (job_dir / "output.srt").is_file()
-    # Persona was copied into the job dir (post-review fix H3).
-    assert (job_dir / "personas").is_dir()
-    persona_files = list((job_dir / "personas").glob("*.png"))
-    assert len(persona_files) == 1
+    # Style seeding writes a single per-job anchor used by IP-Adapter on
+    # SDXL fallback shots.
+    style_dir = job_dir / "style"
+    assert style_dir.is_dir()
+    assert any(p.suffix == ".png" for p in style_dir.iterdir())
 
 
 def test_unknown_job_returns_404(app_client: tuple[TestClient, Path]) -> None:

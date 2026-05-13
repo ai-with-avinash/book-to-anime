@@ -298,6 +298,14 @@ def _factory(sub_config: Mapping[str, Any]) -> OpenAICompatibleProvider:
     return _build(sub_config)
 
 
+@register_language_provider("openai_compatible_vision")
+def _factory_vision(sub_config: Mapping[str, Any]) -> OpenAICompatibleProvider:
+    """Alias factory so a second OpenAI-compatible endpoint (typically a
+    multimodal local model like ``llava``) can be configured as
+    ``language.vision_fallback`` alongside a text-only primary."""
+    return _build(sub_config)
+
+
 # Re-exported for adapters that wrap this one (vendor wrappers).
 build_openai_compatible = _build
 

@@ -9,9 +9,9 @@ Project-specific guidance. Global rules in `~/.claude/CLAUDE.md` still apply
 src/booktoanime/
   api/         FastAPI routers + schemas (request/response only)
   pipeline/    stage logic: parsing, topic_segmenter, summarizer,
-               storyboard, image_renderer, tts_narrator, mouth_animator,
+               storyboard, image_renderer, tts_narrator,
                video_assembler, orchestrator
-  providers/   pluggable language/audio/visual/lipsync adapters
+  providers/   pluggable language/audio/visual adapters
   state/       job repo + manifest persistence
   parsing/     PDF parsing models
   web/         Jinja templates + static assets

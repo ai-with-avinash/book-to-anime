@@ -1,4 +1,4 @@
-"""Verify ShotImageRenderer and TTSNarrator filesystem-truthful resume."""
+"""Verify ShotImageRenderer filesystem-truthful resume."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from booktoanime.errors import ProviderError
 from booktoanime.pipeline.artifacts import (
     ImagesIndex,
     KenBurns,
-    NarratorPersona,
     Shot,
     ShotImageRecord,
     Storyboard,
@@ -42,17 +41,14 @@ def _storyboard(n: int) -> Storyboard:
 class _RecordingVisual(VisualProvider):
     name = "rec"
 
-    def __init__(self, *, persona_dir: Path, fail_on: set[str] | None = None) -> None:
-        self._persona_dir = persona_dir
+    def __init__(self, *, fail_on: set[str] | None = None) -> None:
         self._fail_on = fail_on or set()
         self.rendered_ids: list[str] = []
 
-    async def prepare(self, *, anime_style: str, narrator_seed: int) -> Path:
-        self._persona_dir.mkdir(parents=True, exist_ok=True)
-        path = self._persona_dir / f"{anime_style}__{narrator_seed}.png"
-        if not path.is_file():
-            Image.new("RGB", (32, 32), (10, 30, 60)).save(path)
-        return path
+    async def prepare(self, *, panel_style: str, narrator_seed: int) -> Path:
+        # Phase 1 renderer no longer consumes a prepare() reference. Method is
+        # kept on the ABC; tests here don't exercise it.
+        raise NotImplementedError
 
     async def render(self, request: Any, out_path: Path) -> GeneratedImage:
         shot_id = out_path.stem
@@ -84,8 +80,7 @@ async def test_resume_skips_shots_with_file_and_index_entry(tmp_path: Path) -> N
         items=[ShotImageRecord(shot_id="shot_0001", file="images/shot_0001.png", seed=1, width=16, height=16)]
     ).save(images_dir / "index.json")
 
-    persona = NarratorPersona(seed=42, style_descriptor="shounen-bright")
-    visual = _RecordingVisual(persona_dir=tmp_path / "personas")
+    visual = _RecordingVisual()
     bus = ProgressEventBus(job_dir / "events.log")
     renderer = ShotImageRenderer(
         visual,
@@ -93,7 +88,7 @@ async def test_resume_skips_shots_with_file_and_index_entry(tmp_path: Path) -> N
         bus=bus,
     )
     storyboard = _storyboard(3)
-    index, _ = await renderer.render(storyboard=storyboard, persona=persona, job_dir=job_dir)
+    index = await renderer.render(storyboard=storyboard, job_dir=job_dir)
     await bus.close()
 
     # Shot 1 was already done, so only shots 2 & 3 should have been rendered.
@@ -113,8 +108,7 @@ async def test_index_entry_with_missing_file_triggers_rerender(tmp_path: Path) -
     ).save(images_dir / "index.json")
     assert not (images_dir / "shot_0001.png").exists()
 
-    persona = NarratorPersona(seed=42, style_descriptor="shounen-bright")
-    visual = _RecordingVisual(persona_dir=tmp_path / "personas")
+    visual = _RecordingVisual()
     bus = ProgressEventBus(job_dir / "events.log")
     renderer = ShotImageRenderer(
         visual,
@@ -122,7 +116,7 @@ async def test_index_entry_with_missing_file_triggers_rerender(tmp_path: Path) -
         bus=bus,
     )
     storyboard = _storyboard(1)
-    index, _ = await renderer.render(storyboard=storyboard, persona=persona, job_dir=job_dir)
+    index = await renderer.render(storyboard=storyboard, job_dir=job_dir)
     await bus.close()
 
     assert visual.rendered_ids == ["shot_0001"]
@@ -139,8 +133,7 @@ async def test_orphan_file_without_index_is_adopted(tmp_path: Path) -> None:
     # File on disk for shot_0001, no index.json.
     Image.new("RGB", (16, 16), (1, 2, 3)).save(images_dir / "shot_0001.png")
 
-    persona = NarratorPersona(seed=42, style_descriptor="shounen-bright")
-    visual = _RecordingVisual(persona_dir=tmp_path / "personas")
+    visual = _RecordingVisual()
     bus = ProgressEventBus(job_dir / "events.log")
     renderer = ShotImageRenderer(
         visual,
@@ -148,7 +141,7 @@ async def test_orphan_file_without_index_is_adopted(tmp_path: Path) -> None:
         bus=bus,
     )
     storyboard = _storyboard(2)
-    index, _ = await renderer.render(storyboard=storyboard, persona=persona, job_dir=job_dir)
+    index = await renderer.render(storyboard=storyboard, job_dir=job_dir)
     await bus.close()
 
     # Orphan adopted -> renderer only had to render shot_0002.
@@ -157,60 +150,9 @@ async def test_orphan_file_without_index_is_adopted(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_persona_uses_explicit_anime_style_not_descriptor(tmp_path: Path) -> None:
-    """The renderer must pass the configured anime_style verbatim to
-    `provider.prepare`, not a token sliced out of `style_descriptor`.
-    """
-
-    job_dir = tmp_path / "job"
-    captured: list[str] = []
-
-    class _Visual(VisualProvider):
-        name = "rec"
-
-        async def prepare(self, *, anime_style: str, narrator_seed: int) -> Path:
-            captured.append(anime_style)
-            (tmp_path / "personas").mkdir(parents=True, exist_ok=True)
-            path = tmp_path / "personas" / f"{anime_style}__{narrator_seed}.png"
-            Image.new("RGB", (16, 16), (1, 2, 3)).save(path)
-            return path
-
-        async def render(self, request, out_path):
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            Image.new("RGB", (request.width, request.height), (10, 20, 30)).save(out_path)
-            return GeneratedImage(path=out_path, seed=request.seed, width=request.width, height=request.height)
-
-        async def close(self):
-            return None
-
-    persona = NarratorPersona(
-        seed=42,
-        # Real-world descriptor produced by derive_persona — has a comma in it.
-        style_descriptor="shoujo-soft narrator persona, voice af_bella in en-US",
-    )
-    bus = ProgressEventBus(job_dir / "events.log")
-    renderer = ShotImageRenderer(
-        _Visual(),
-        ImageRendererConfig(
-            width=64, height=64, steps=2, guidance=4.0, concurrency=1,
-            anime_style="shoujo-soft",  # canonical config value
-        ),
-        bus=bus,
-    )
-    storyboard = _storyboard(1)
-    await renderer.render(storyboard=storyboard, persona=persona, job_dir=job_dir)
-    await bus.close()
-
-    # Provider received the canonical "shoujo-soft", not the parsed
-    # "shoujo-soft narrator persona".
-    assert captured == ["shoujo-soft"]
-
-
-@pytest.mark.asyncio
 async def test_partial_failure_persists_completed_records(tmp_path: Path) -> None:
     job_dir = tmp_path / "job"
-    persona = NarratorPersona(seed=42, style_descriptor="shounen-bright")
-    visual = _RecordingVisual(persona_dir=tmp_path / "personas", fail_on={"shot_0002"})
+    visual = _RecordingVisual(fail_on={"shot_0002"})
     bus = ProgressEventBus(job_dir / "events.log")
     renderer = ShotImageRenderer(
         visual,
@@ -220,7 +162,7 @@ async def test_partial_failure_persists_completed_records(tmp_path: Path) -> Non
     storyboard = _storyboard(3)
 
     with pytest.raises(ProviderError):
-        await renderer.render(storyboard=storyboard, persona=persona, job_dir=job_dir)
+        await renderer.render(storyboard=storyboard, job_dir=job_dir)
     await bus.close()
 
     # Index file persists shot_0001 (pre-failure) but not shot_0002 (failed).

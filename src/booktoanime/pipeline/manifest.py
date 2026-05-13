@@ -10,7 +10,15 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..errors import ManifestSchemaMismatch
+from .artifacts import JobArtifacts
 from .stages import STAGE_ORDER, Stage
+
+# Bump this whenever a non-backwards-compatible change ships in the job
+# directory layout or manifest shape. v0.1.0 introduces breaking renames
+# (panel_style replaces the old style field) and drops the lipsync block, so a fresh job
+# directory is required.
+CURRENT_MANIFEST_SCHEMA_VERSION = 2
 
 
 class StageStatus(StrEnum):
@@ -44,23 +52,6 @@ class ProvidersConfig(BaseModel):
     language: str
     audio: str
     visual: str
-    lipsync: str = "passthrough"
-
-
-class LipSyncConfig(BaseModel):
-    """Per-job lip-sync settings.
-
-    Defaults keep the existing static-image flow: ``enabled=False`` means the
-    mouth-animation stage no-ops and the assembler still consumes per-shot
-    PNGs. When enabled, the pipeline produces one mp4 per shot via the
-    selected provider and the assembler ingests those instead.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    enabled: bool = False
-    provider: str = "passthrough"
-    preserve_ken_burns: bool = False
 
 
 Depth = Literal["eli5", "undergraduate", "expert"]
@@ -74,7 +65,7 @@ class JobConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    anime_style: str = "shounen-bright"
+    panel_style: str = "clean-linework"
     narration: NarrationConfig
     depth: Depth = "undergraduate"
     length_preset: LengthPreset = "standard"
@@ -82,7 +73,6 @@ class JobConfig(BaseModel):
     aspect_ratio: AspectRatio = "16:9"
     profile: Profile = "default"
     providers: ProvidersConfig
-    lipsync: LipSyncConfig = Field(default_factory=LipSyncConfig)
 
 
 class JobManifest(BaseModel):
@@ -90,6 +80,14 @@ class JobManifest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    manifest_schema_version: int = Field(
+        default=CURRENT_MANIFEST_SCHEMA_VERSION,
+        ge=1,
+        description=(
+            "Manifest format version. Loader refuses to read manifests whose "
+            "version differs from the build-time constant."
+        ),
+    )
     schema_version: int = Field(default=1, ge=1)
     job_id: str
     created_at: str
@@ -98,6 +96,7 @@ class JobManifest(BaseModel):
     )
     config: JobConfig
     stages: dict[str, StageState] = Field(default_factory=dict)
+    artifacts: JobArtifacts = Field(default_factory=JobArtifacts)
 
     # ------------------------------------------------------------- factories
 
@@ -119,7 +118,36 @@ class JobManifest(BaseModel):
 
     @classmethod
     def from_path(cls, path: Path) -> JobManifest:
-        return cls.model_validate_json(path.read_bytes())
+        """Load a manifest. Refuses to read incompatible schema versions.
+
+        Raises:
+            ManifestSchemaMismatch: ``manifest_schema_version`` (or its absence
+                — old manifests didn't carry this key) does not match
+                :data:`CURRENT_MANIFEST_SCHEMA_VERSION`.
+        """
+
+        import json
+
+        raw = json.loads(path.read_bytes())
+        if not isinstance(raw, dict):
+            raise ManifestSchemaMismatch(
+                f"Manifest at {path} is not a JSON object."
+            )
+        found = raw.get("manifest_schema_version")
+        if found != CURRENT_MANIFEST_SCHEMA_VERSION:
+            raise ManifestSchemaMismatch(
+                f"Manifest schema v{found!r} not supported (build expects "
+                f"v{CURRENT_MANIFEST_SCHEMA_VERSION}). Delete or back up "
+                f"`<data_dir>/jobs/` and start fresh; v0.1.0 introduces "
+                f"breaking changes.",
+                user_message=(
+                    f"Job directory uses manifest schema v{found!r} but this "
+                    f"build expects v{CURRENT_MANIFEST_SCHEMA_VERSION}. Back "
+                    f"up or delete the old jobs directory and start fresh — "
+                    f"v0.1.0 introduces breaking changes."
+                ),
+            )
+        return cls.model_validate(raw)
 
     # ------------------------------------------------------------- mutations
 

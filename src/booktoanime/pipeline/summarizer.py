@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -12,6 +13,45 @@ from ..parsing.models import ParsedDocument
 from ..providers import ChatMessage, CompletionRequest, LanguageProvider
 from .artifacts import TopicSection
 from .topic_segmenter import TopicSpan
+
+# Some reasoning models (qwen3, deepseek-r1) wrap their answer in
+# <think>...</think> blocks before the JSON. Strip them before parsing.
+_THINK_BLOCK = re.compile(r"<think\b[^>]*>.*?</think>", re.DOTALL | re.IGNORECASE)
+# Fallback: find first balanced JSON object in the cleaned response.
+_FIRST_JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
+
+
+def _extract_json_payload(response: str) -> str:
+    """Best-effort recover a JSON object from a chat response.
+
+    Order of attempts:
+      1. raw response (fast path for compliant models)
+      2. response with ``<think>...</think>`` blocks stripped
+      3. first ``{...}`` substring of the cleaned response
+    """
+    candidates: list[str] = [response]
+    stripped = _THINK_BLOCK.sub("", response).strip()
+    if stripped != response.strip():
+        candidates.append(stripped)
+    match = _FIRST_JSON_OBJECT.search(stripped or response)
+    if match is not None:
+        candidates.append(match.group(0))
+    last_exc: json.JSONDecodeError | None = None
+    for candidate in candidates:
+        candidate = candidate.strip()
+        if not candidate:
+            continue
+        try:
+            json.loads(candidate)
+            return candidate
+        except json.JSONDecodeError as exc:
+            last_exc = exc
+            continue
+    raise json.JSONDecodeError(
+        last_exc.msg if last_exc else "no JSON object found in response",
+        response,
+        last_exc.pos if last_exc else 0,
+    )
 
 Depth = Literal["eli5", "undergraduate", "expert"]
 LengthPreset = Literal["short", "standard", "in_depth"]
@@ -142,14 +182,21 @@ class TopicSummarizer:
     ) -> dict[str, object]:
         depth_instruction = _DEPTH_INSTRUCTIONS[self._config.depth]
         word_target = max(40, int(target_seconds * 165 / 60))
+        # ``/no_think`` is a qwen3 / qwen2.5-reasoning directive that disables
+        # the model's <think>...</think> chain so the entire token budget is
+        # spent on the JSON answer. Models that don't recognize it ignore it
+        # harmlessly.
         system_prompt = (
-            "You are condensing one chapter of a book for a narrated explainer "
-            "video. " + depth_instruction
+            "/no_think You are condensing one chapter of a document for a "
+            "narrated explainer video. Use concrete examples and clear "
+            "definitions. Match the source's domain — don't force STEM "
+            "framing on non-technical content. " + depth_instruction
         )
         user_prompt = (
+            "/no_think\n"
             f"Topic title: {title}\n"
             f"Target narration length: {target_seconds:.0f} seconds (~{word_target} words).\n"
-            "Reply with valid JSON only:\n"
+            "Reply with valid JSON only, no preamble, no thinking, no markdown fences:\n"
             '{"summary": "<narration-ready prose>",'
             ' "key_points": ["point 1", "point 2", ...],'
             ' "estimated_words": <int>}\n\n'
@@ -169,7 +216,7 @@ class TopicSummarizer:
         )
 
         try:
-            payload = json.loads(response)
+            payload = json.loads(_extract_json_payload(response))
         except json.JSONDecodeError as exc:
             raise ProviderError(
                 f"summarizer response was not JSON: {response[:200]}"
@@ -184,7 +231,7 @@ class TopicSummarizer:
         words = payload.get("estimated_words")
         # ``bool`` is an ``int`` subclass in Python; rule it out explicitly so
         # ``"estimated_words": true`` doesn't yield ~0.36 s.
-        if isinstance(words, (int, float)) and not isinstance(words, bool) and words > 0:
+        if isinstance(words, int | float) and not isinstance(words, bool) and words > 0:
             return float(words) * 60.0 / 165.0
         text = str(fallback_text or "")
         if not text:

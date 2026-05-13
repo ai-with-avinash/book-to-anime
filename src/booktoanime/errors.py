@@ -85,3 +85,33 @@ class CapabilityNotSupportedError(ProviderError):
 
 # Backwards-compatible alias used in the published interface docs.
 CapabilityNotSupported = CapabilityNotSupportedError
+
+
+# ---- Rendering / manifest errors ---------------------------------------------
+
+
+class RenderError(BookToAnimeError):
+    """Panel composer / figure compositing failure.
+
+    Raised by the phase-3 ``panel_composer`` module when a figure cannot be
+    rendered (e.g. font load failure, missing extracted image referenced by
+    ``Shot.figure_id``). Surfaces an actionable user message and lets the
+    image-renderer stage fail cleanly.
+    """
+
+    user_message = "Failed to render a panel image."
+
+
+class ManifestSchemaMismatch(BookToAnimeError):  # noqa: N818
+    """Raised when ``manifest.json`` was written by an incompatible version.
+
+    The loader (``JobManifest.from_path``) refuses to read a manifest whose
+    ``manifest_schema_version`` differs from the value the running build
+    supports. The fix is to delete or back up the affected job directory and
+    start fresh — there is no in-place migration in v0.1.
+    """
+
+    user_message = (
+        "Job directory was written by an incompatible BookToAnime version. "
+        "Delete or back up `<data_dir>/jobs/` and start a fresh job."
+    )
