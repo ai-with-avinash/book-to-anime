@@ -315,6 +315,10 @@ real end-to-end check.
   fallback look across a job.
 * `studypanels` console script alias in v0.2 (current binary stays
   `booktoanime` to avoid breaking entry-point consumers).
+* Mouth-animation / lip-sync stage (Replicate-hosted SadTalker or local)
+  re-introduction — provider abstraction landed previously, but the
+  stage module + orchestrator handler were removed; revival pending
+  product decision on cost/latency trade-off.
 * Multilingual narration: ship voice presets for non-English Kokoro
   packs once upstream stabilizes.
 * Per-image bbox-based caption hint matching (currently page-level).

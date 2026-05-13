@@ -17,7 +17,7 @@
   </div>
 
   <ol class="stages">
-    {% for name in ["parsing","structuring","storyboard","images","audio","mouth_animation","assembly"] %}
+    {% for name in ["parsing","structuring","storyboard","images","audio","assembly"] %}
       <li :class="'stage-row stage-' + (stages['{{ name }}'] || 'pending')">
         <span class="stage-name">{{ name }}</span>
         <span class="stage-status" x-text="stages['{{ name }}'] || '{{ job.stages.get(name, "pending") }}'"></span>
@@ -44,8 +44,8 @@
     <video
       controls
       preload="metadata"
-      width="100%"
-      :src="`/api/jobs/{{ job.job_id }}/files/output.mp4`"
+      style="width: 100%"
+      src="/api/jobs/{{ job.job_id }}/files/output.mp4"
     >
       Your browser doesn't support inline video. Download below.
     </video>
@@ -64,7 +64,7 @@
               <span x-text="`${String(chapter.order).padStart(3, '0')} — ${chapter.topic_id}`"></span>
               <span class="muted" x-text="`(${formatDuration(chapter.duration_seconds)})`"></span>
             </h4>
-            <video controls preload="metadata" width="100%" :src="chapter.mp4_url">
+            <video controls preload="metadata" style="width: 100%" :src="chapter.mp4_url">
               Your browser doesn't support inline video.
             </video>
             <p class="downloads">

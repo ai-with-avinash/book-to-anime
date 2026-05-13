@@ -37,11 +37,8 @@ from booktoanime.api import AppSettings, ProviderFactory, create_app
 from booktoanime.parsing import PDFParser
 from booktoanime.pipeline.manifest import ProvidersConfig
 from booktoanime.providers.audio.kokoro import _factory as kokoro_factory
-from booktoanime.providers.base import GeneratedImage, LipSyncProvider, VisualProvider
+from booktoanime.providers.base import GeneratedImage, VisualProvider
 from booktoanime.providers.language.openai_compatible import build_openai_compatible
-from booktoanime.providers.lipsync.replicate_hosted import (
-    _factory as replicate_lipsync_factory,
-)
 from booktoanime.providers.visual.sdxl_diffusers import _factory as sdxl_factory
 
 
@@ -174,31 +171,6 @@ def _build_visual_factory(persona_dir: Path) -> Any:
     return _factory
 
 
-def _build_lipsync() -> LipSyncProvider | None:
-    """Replicate-hosted SadTalker if ``REPLICATE_API_TOKEN`` is set, else None.
-
-    Returning None is a soft default — the orchestrator skips
-    MOUTH_ANIMATION when ``lipsync.enabled`` is false in the JobConfig and
-    raises a clear error if it's enabled but no provider is wired.
-
-    The Replicate model id is overridable via ``BOOKTOANIME_LIPSYNC_MODEL``
-    so users can switch forks (the original ``cjwbw/sadtalker`` was
-    retired) without code changes. ``BOOKTOANIME_LIPSYNC_VERSION`` pins a
-    specific weights hash if reproducibility matters.
-    """
-
-    if not os.environ.get("REPLICATE_API_TOKEN"):
-        return None
-    sub_config: dict[str, Any] = {
-        "api_key_env": "REPLICATE_API_TOKEN",
-        "model": _env("BOOKTOANIME_LIPSYNC_MODEL", "lucataco/sadtalker"),
-    }
-    pinned_version = os.environ.get("BOOKTOANIME_LIPSYNC_VERSION", "").strip()
-    if pinned_version:
-        sub_config["version"] = pinned_version
-    return replicate_lipsync_factory(sub_config)
-
-
 def main() -> None:
     load_dotenv(REPO_ROOT / ".env")
     data_dir = REPO_ROOT / ".local-data"
@@ -209,7 +181,6 @@ def main() -> None:
         language_factory=_build_language,
         audio_factory=_build_audio,
         visual_factory=_build_visual_factory(persona_dir),
-        lipsync_factory=_build_lipsync,
     )
     settings = AppSettings(
         data_dir=data_dir,
